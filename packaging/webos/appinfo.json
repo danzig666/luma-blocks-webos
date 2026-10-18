@@ -1,0 +1,15 @@
+{
+  "id": "io.github.danzig666.lumablocks",
+  "version": "0.0.0",
+  "vendor": "Luma Blocks contributors",
+  "type": "native",
+  "main": "bin/luma-blocks",
+  "title": "Luma Blocks",
+  "icon": "icon.png",
+  "largeIcon": "icon_large.png",
+  "splashBackground": "splash.png",
+  "iconColor": "#000000",
+  "appDescription": "Minimalist falling-block puzzle with Magic Remote motion controls",
+  "useAllMouseButtons": true,
+  "supportTouchMode": "full"
+}

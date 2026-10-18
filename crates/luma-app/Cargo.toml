@@ -1,0 +1,23 @@
+[package]
+name = "luma-app"
+description = "Luma Blocks: a falling-block game for LG webOS TVs with Magic Remote motion controls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "luma-blocks"
+path = "src/main.rs"
+
+[dependencies]
+luma-core = { path = "../luma-core" }
+luma-input = { path = "../luma-input" }
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+sdl2 = { version = "0.37", default-features = false }
+fontdue = "0.9"
+libc = "0.2"
+
+[build-dependencies]
+cc = "1.2"

@@ -1,0 +1,12 @@
+[package]
+name = "luma-core"
+description = "Luma Blocks: deterministic falling-block game engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

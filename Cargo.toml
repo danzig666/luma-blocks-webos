@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/luma-core", "crates/luma-input", "crates/luma-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/danzig666/luma-blocks-webos"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+debug = 0
+panic = "unwind"
+
+[profile.dev.package."*"]
+opt-level = 2

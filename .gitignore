@@ -1,0 +1,9 @@
+/target
+/build
+/deps-out
+/dist
+/shots
+/THIRD-PARTY-NOTICES.txt
+/sbom.cdx.json
+.tv.env
+*.bmp
