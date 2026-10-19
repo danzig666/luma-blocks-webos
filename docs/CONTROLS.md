@@ -80,6 +80,7 @@ Tips:
 | Menu says "Motion not available" / "not permitted" | Your TV or remote does not offer the sensor to apps. Circles, flicks and pointing still work from the pointer; twist needs the sensor. Please report it with **Input diagnostics** (Settings → More → Developer options). |
 | The piece follows the remote back | Choose **Swinging** instead of Pointing (Settings → Move sideways by). |
 | Pointing aim is off-centre | Recenter (Blue), or run the motion setup again. |
+| Pointing (or the aim dot) moves the wrong way for the first moment | The app learns how your TV reports the remote's orientation from the first few movements; move the remote around a little. Input diagnostics shows "orientation vs gyro". |
 | Buttons do nothing in play | The game waits for "Ready" after a pause: release all buttons and hold the remote still. |
 | Screen went dark | Menus dim after the set time and fade to black; press any button (that press only wakes the screen). |
 | Saved game missing after an update | Please report it; see the TV checklist. |

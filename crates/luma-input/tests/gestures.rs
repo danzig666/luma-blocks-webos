@@ -970,3 +970,53 @@ fn gyro_only_and_orientation_only_streams_both_work() {
     want.extend([Gesture::MoveRight; 3]);
     assert_eq!(got, want, "orientation only");
 }
+
+// --- Orientation convention ------------------------------------------------------------
+
+/// Some firmware may report the rotation vector in the opposite convention (the inverse
+/// rotation). Gyro-based gestures are unaffected; absolute pointing must still go the way the
+/// remote moves once a little motion has shown how the two relate.
+#[test]
+fn pointing_follows_the_remote_even_with_an_inverted_orientation() {
+    for invert in [false, true] {
+        let p = profile(RotationStyle::Twist, HorizontalStyle::Pointing);
+        let mut e = engine(p);
+        let mut s = Synth::new(100.0, 41);
+        let fix = |v: Vec<MotionSample>| -> Vec<MotionSample> {
+            v.into_iter()
+                .map(|mut m| {
+                    if invert {
+                        m.quat = m.quat.map(|q| q.conj());
+                    }
+                    m
+                })
+                .collect()
+        };
+        feed(&mut e, &fix(s.hold(500.0)));
+        // Ordinary aiming around the board: about 40 degrees of yaw and some pitch.
+        feed(
+            &mut e,
+            &fix(s.motion(1200.0, |q| (6.0 * (q * 12.0).sin(), 3.0 * (q * 9.0).sin(), 0.0))),
+        );
+        feed(&mut e, &fix(s.hold(400.0)));
+        let range = PointRange {
+            left: -0.3,
+            center: 0.0,
+            right: 0.3,
+        };
+        let centre = e.aim_column(10.0, range).unwrap();
+        feed(&mut e, &fix(s.motion(600.0, |q| (5.0 * ease(q), 0.0, 0.0))));
+        feed(&mut e, &fix(s.hold(300.0)));
+        let right = e.aim_column(10.0, range).unwrap();
+        assert!(right > centre + 1.0, "invert {invert}: {centre} -> {right}");
+        let f = e.debug.last_frame;
+        let up = f.abs.unwrap().y;
+        feed(&mut e, &fix(s.motion(600.0, |q| (0.0, 4.0 * ease(q), 0.0))));
+        feed(&mut e, &fix(s.hold(300.0)));
+        let f = e.debug.last_frame;
+        assert!(
+            f.abs.unwrap().y < up - 0.05,
+            "invert {invert}: tip up must aim higher"
+        );
+    }
+}

@@ -33,7 +33,9 @@ pure crates and runs on any desktop.
   asleep, duplicate subscription, too many clients, bad interval, malformed.
 * **Frames**: motion comes from the **gyroscope** whenever it is delivered (a direct
   body-frame rate with documented axes); its units are cross-checked against the orientation at
-  runtime (rad/s per LG, deg/s detected automatically). Short-term aim is integrated from the gyro
+  runtime (rad/s per LG, deg/s detected automatically). The orientation's yaw and pitch are
+  compared with the gyro's while the remote moves; if the firmware reports the rotation vector
+  in the opposite convention (which mirrors pointing), the absolute aim is flipped to match. Short-term aim is integrated from the gyro
   with a slow leak. For the Pointing style, absolute aim comes from the orientation relative to
   the calibrated neutral pose, projected to yaw and
   pitch. A swing-twist decomposition gives the twist about the calibrated long axis, sign-safe

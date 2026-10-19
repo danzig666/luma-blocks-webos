@@ -245,6 +245,17 @@ impl App {
             self.engine.swing.travel,
             self.engine.swing.ret_budget.max(0.0)
         ));
+        let (oy, op) = self.engine.orientation_signs();
+        let sign = |v: f32| match v {
+            v if v > 0.0 => "matches gyro",
+            v if v < 0.0 => "mirrored (corrected)",
+            _ => "learning",
+        };
+        lines.push(format!(
+            "orientation vs gyro: yaw {}  ·  pitch {}",
+            sign(oy),
+            sign(op)
+        ));
         for l in lines {
             g.text(&l, x2, y, small, Face::Regular, theme::TEXT_DIM);
             y += lh;

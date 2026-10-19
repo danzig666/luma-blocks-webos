@@ -201,6 +201,12 @@ impl GestureEngine {
         )
     }
 
+    /// How the orientation's yaw and pitch relate to the gyro's: +1 same, -1 mirrored
+    /// (corrected), 0 not yet known.
+    pub fn orientation_signs(&self) -> (f32, f32) {
+        (self.sensor.orient_yaw_sign, self.sensor.orient_pitch_sign)
+    }
+
     pub fn motion(&mut self, s: &MotionSample) {
         if let Some(p) = self.probe.as_mut() {
             let dt = self

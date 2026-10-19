@@ -1,13 +1,23 @@
-# Luma Blocks 0.2.2 (test build)
+# Luma Blocks 0.2.3 (test build)
 
 A minimalist falling-block puzzle for LG webOS TVs with Magic Remote motion controls.
 
 **Pre-release.** Built, ABI-audited and smoke-tested under ARM emulation; game and gesture logic
 covered by automated tests. On-TV feedback drove this release; motion behaviour on real remotes
 still needs confirming
-([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.2/docs/TV_CHECKLIST.md)).
+([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.3/docs/TV_CHECKLIST.md)).
 
-## What changed since 0.2.1
+## What changed since 0.2.2
+
+* **Pointing went the wrong way** (piece and aim dot mirrored left/right). The Pointing style
+  takes absolute aim from the remote's orientation, while swings, the motion setup and the
+  other gestures use the gyroscope. On this TV the orientation evidently arrives in the
+  opposite convention. The app now compares the two while the remote moves and flips the
+  orientation's left/right and up/down to match the gyro, so pointing and the aim dot follow
+  the remote. It learns this from the first ~25° of movement, and Input diagnostics shows it
+  ("orientation vs gyro").
+
+## Earlier: 0.2.2 (since 0.2.1)
 
 Feedback on 0.2.1 (motion now works on the TV): circle rotation fired during sideways swings;
 swings sometimes did not move and sometimes moved too far; a dropped piece could not be nudged.
@@ -83,13 +93,13 @@ pointer did not show.
 
 ## Downloads
 
-* `io.github.danzig666.lumablocks_0.2.2_arm.ipk`: **Luma Blocks**
-* `io.github.danzig666.lumablocks.debug_0.2.2_arm.ipk`: **Luma Blocks (Dev)**, a separate
+* `io.github.danzig666.lumablocks_0.2.3_arm.ipk`: **Luma Blocks**
+* `io.github.danzig666.lumablocks.debug_0.2.3_arm.ipk`: **Luma Blocks (Dev)**, a separate
   identity with separate saves
 * `SHA256SUMS.txt`, plus the Homebrew Channel manifest
 
 Install: Developer Mode (`ares-install`) or Homebrew Channel / Dev Manager. See
-[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.2/docs/INSTALL.md).
+[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.3/docs/INSTALL.md).
 
 **For testers:** please run Settings → Calibrate the remote first. If gestures still feel wrong,
 turn on Settings → More → Developer options, open **Input diagnostics**, record a trace with Red

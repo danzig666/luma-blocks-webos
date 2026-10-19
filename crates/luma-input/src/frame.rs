@@ -52,6 +52,38 @@ pub struct AimTracker {
     pub gyro_to_dps: f32,
     /// Whether the gyro units were confirmed against the orientation.
     pub gyro_units_checked: bool,
+    /// Signs that align the orientation's yaw and pitch with the gyro's (+1 or -1; 0 = not
+    /// yet known, treated as +1). Firmware may report the rotation vector in the opposite
+    /// convention, which mirrors absolute pointing while gyro-based swings stay right.
+    pub orient_yaw_sign: f32,
+    pub orient_pitch_sign: f32,
+    orient_prev: Option<(f32, f32)>,
+    yaw_agree: Agreement,
+    pitch_agree: Agreement,
+}
+
+/// Degrees of gyro-measured motion needed before deciding an orientation sign.
+const ORIENT_CHECK_DEG: f32 = 25.0;
+
+/// Running comparison of orientation steps with gyro steps about one axis, degrees.
+#[derive(Debug, Clone, Copy, Default)]
+struct Agreement {
+    og: f32,
+    oo: f32,
+    gg: f32,
+    travel: f32,
+}
+
+impl Agreement {
+    /// Add one step; returns the sign once there is enough motion and a clear relation.
+    fn learn(&mut self, o: f32, g: f32) -> Option<f32> {
+        self.og += o * g;
+        self.oo += o * o;
+        self.gg += g * g;
+        self.travel += g.abs();
+        let corr = self.og / (self.oo * self.gg).sqrt().max(1e-9);
+        (self.travel >= ORIENT_CHECK_DEG && corr.abs() > 0.5).then(|| corr.signum())
+    }
 }
 
 /// LG documents the gyroscope in rad/s.
@@ -60,10 +92,42 @@ pub const RAD_TO_DEG: f32 = 57.295_78;
 impl AimTracker {
     pub fn reset(&mut self) {
         // The unit check survives resets: it describes the hardware, not the gesture.
+        // So do the orientation signs.
         let (g, checked) = (self.gyro_to_dps, self.gyro_units_checked);
+        let (ys, ps, ya, pa) = (
+            self.orient_yaw_sign,
+            self.orient_pitch_sign,
+            self.yaw_agree,
+            self.pitch_agree,
+        );
         *self = AimTracker::default();
         self.gyro_to_dps = g;
         self.gyro_units_checked = checked;
+        self.orient_yaw_sign = ys;
+        self.orient_pitch_sign = ps;
+        self.yaw_agree = ya;
+        self.pitch_agree = pa;
+    }
+
+    /// Learn whether the orientation turns the same way as the gyro, from steps of both.
+    fn check_orientation(&mut self, yaw: f32, pitch: f32, gyro_step: Option<(f32, f32)>) {
+        if let (Some((py, pp)), Some((gy, gp))) = (self.orient_prev, gyro_step) {
+            let (dy, dp) = (wrap_deg(yaw - py), pitch - pp);
+            // Ignore jumps (re-centring, wrap-around noise); learn only from real motion.
+            if dy.abs() < 15.0 && dp.abs() < 15.0 {
+                if self.orient_yaw_sign == 0.0 && gy.abs() > 0.05 {
+                    if let Some(s) = self.yaw_agree.learn(dy, gy) {
+                        self.orient_yaw_sign = s;
+                    }
+                }
+                if self.orient_pitch_sign == 0.0 && gp.abs() > 0.05 {
+                    if let Some(s) = self.pitch_agree.learn(dp, gp) {
+                        self.orient_pitch_sign = s;
+                    }
+                }
+            }
+        }
+        self.orient_prev = Some((yaw, pitch));
     }
 
     fn scale(&self) -> f32 {
@@ -137,14 +201,32 @@ impl AimTracker {
         self.check_units(s, dt_raw);
         let dt_int = dt_raw.min(0.1);
         // Absolute aim from the orientation (relative to the calibrated neutral pose).
-        let orient = s.quat.map(|q| {
+        let raw_orient = s.quat.map(|q| {
             let neutral = calib.neutral.unwrap_or(Quat::IDENTITY);
             let rel = neutral.relative_to(q);
             let f = rel.rotate(long);
             let yaw = f.dot(right).atan2(f.dot(long)).to_degrees() * calib.yaw_sign;
             let pitch = f.dot(up).clamp(-1.0, 1.0).asin().to_degrees() * calib.pitch_sign;
             let twist = rel.twist_angle(long).to_degrees() * calib.twist_sign;
-            (Vec2::new(yaw / cfg.deg_per_sh, -pitch / cfg.deg_per_sh), twist)
+            (yaw, pitch, twist)
+        });
+        if let Some((yaw, pitch, _)) = raw_orient {
+            let gyro_step = s.gyro.filter(|_| dt_int > 0.0).map(|g| {
+                let g = g.scale(self.scale());
+                (
+                    -g.dot(up) * calib.yaw_sign * dt_int,
+                    g.dot(right) * calib.pitch_sign * dt_int,
+                )
+            });
+            self.check_orientation(yaw, pitch, gyro_step);
+        }
+        let sy = if self.orient_yaw_sign < 0.0 { -1.0 } else { 1.0 };
+        let sp = if self.orient_pitch_sign < 0.0 { -1.0 } else { 1.0 };
+        let orient = raw_orient.map(|(yaw, pitch, twist)| {
+            (
+                Vec2::new(sy * yaw / cfg.deg_per_sh, -sp * pitch / cfg.deg_per_sh),
+                twist,
+            )
         });
         let cursor = s.cursor.map(|(x, y)| Vec2::new(x / 1080.0, y / 1080.0));
         let use_gyro = s.gyro.is_some() && (cfg.prefer_gyro || orient.is_none());
