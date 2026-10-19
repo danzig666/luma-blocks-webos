@@ -547,7 +547,15 @@ impl Swing {
     }
 
     /// `strict`: circles are enabled. `blocked`: another gesture owns the motion.
-    pub fn update(&mut self, f: &Frame, c: &Thresholds, strict: bool, blocked: bool) -> Vec<Commit> {
+    /// `dropping`: a downward flick is under way or just happened.
+    pub fn update(
+        &mut self,
+        f: &Frame,
+        c: &Thresholds,
+        strict: bool,
+        blocked: bool,
+        dropping: bool,
+    ) -> Vec<Commit> {
         let mut out = Vec::new();
         if f.gap {
             self.reset();
@@ -589,7 +597,7 @@ impl Swing {
                 let starts = vx.abs() > c.swing_start_speed && vx.abs() > c.swing_dominance * vy.abs();
                 let dir = sign(vx);
                 let is_return = self.return_active(f.t_us) && dir == self.ret_dir;
-                if starts && !is_return && !blocked && !twisting {
+                if starts && !is_return && !blocked && !dropping && !twisting {
                     self.phase = Phase::Candidate;
                     self.dir = dir;
                     self.start_us = f.t_us;
@@ -629,10 +637,9 @@ impl Swing {
                 }
                 let along = vx * self.dir;
                 self.peak = self.peak.max(along);
-                // A swing slows down before it stops or turns back; the side of a circle keeps
-                // its speed and curves away.
-                if strict
-                    && along < c.swing_stop_speed
+                // A swing slows down before it stops or turns back; the side of a circle or the
+                // start of a downward flick keeps its speed and curves away.
+                if along < c.swing_stop_speed
                     && speed > 0.5 * self.peak
                     && vy.abs() > (0.75 * c.swing_start_speed).max(1.5 * vx.abs())
                 {
@@ -640,10 +647,16 @@ impl Swing {
                     self.phase = Phase::Disarmed;
                     return out;
                 }
+                if dropping {
+                    // A sideways wind-up that turns into a downward flick is part of the drop.
+                    // Its way back still counts as a return.
+                    self.phase = Phase::Disarmed;
+                    return out;
+                }
                 if blocked || (twisting && self.moved == 0) {
                     // A held stroke that has already stopped going sideways was a swing: the
                     // loop of its pull back may look like the start of a circle.
-                    if strict && self.pending > 0 && vx * self.dir < c.swing_stop_speed {
+                    if self.pending > 0 && vx * self.dir < c.swing_stop_speed {
                         while self.moved < self.pending {
                             self.moved += 1;
                             out.push(self.commit(f.t_us));
@@ -654,32 +667,11 @@ impl Swing {
                     self.cancel(f.t_us, c);
                     return out;
                 }
-                // With circles enabled, the stroke's columns are held until it ends: only then
-                // is it clear whether it was a sideways swing (it stops or turns back) or the
-                // side of a circle (it curves away at speed).
-                let deferred = strict;
+                // The stroke's columns are held until it ends: only then is it clear whether it
+                // was a sideways swing (it stops or turns back) or the side of a circle or the
+                // wind-up of a downward flick (it curves away at speed).
                 if self.confirmed && self.mode == StrokeMode::Columns {
-                    let target = swing_columns(self.travel, c);
-                    if deferred {
-                        self.pending = self.pending.max(target);
-                    } else {
-                        while self.moved < target {
-                            self.moved += 1;
-                            out.push(self.commit(f.t_us));
-                        }
-                    }
-                }
-                // Flick: one column as soon as the stroke is clearly past its peak, before any
-                // recoil begins.
-                if self.mode == StrokeMode::Single
-                    && !deferred
-                    && self.moved == 0
-                    && self.confirmed
-                    && self.travel >= c.flick_min_travel_sh
-                    && along < 0.6 * self.peak
-                {
-                    self.moved = 1;
-                    out.push(self.commit(f.t_us));
+                    self.pending = self.pending.max(swing_columns(self.travel, c));
                 }
                 let reversed = along < -c.swing_stop_speed;
                 if along < c.swing_stop_speed {
@@ -692,7 +684,7 @@ impl Swing {
                         .slow_since
                         .is_some_and(|s0| (f.t_us - s0) as f32 / 1000.0 >= c.swing_end_ms);
                 if ended {
-                    if deferred && self.confirmed && self.mode == StrokeMode::Columns {
+                    if self.confirmed && self.mode == StrokeMode::Columns {
                         while self.moved < self.pending {
                             self.moved += 1;
                             out.push(self.commit(f.t_us));
@@ -714,7 +706,9 @@ impl Swing {
                 // the return can be ignored like any other.
                 self.travel = self.travel.max((f.aim.x - self.origin_x) * self.dir);
                 if speed < c.rearm_speed {
-                    if self.travel > 0.02 && !self.turned && !self.return_active(f.t_us) {
+                    // The return window covers the whole way the stroke went, even when it
+                    // was cut short early (its budget then was too small).
+                    if self.travel > 0.02 && !self.turned {
                         self.end_stroke(f.t_us, c);
                     } else {
                         self.phase = if self.return_active(f.t_us) {

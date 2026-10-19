@@ -1,13 +1,32 @@
-# Luma Blocks 0.2.4 (test build)
+# Luma Blocks 0.2.5 (test build)
 
 A minimalist falling-block puzzle for LG webOS TVs with Magic Remote motion controls.
 
 **Pre-release.** Built, ABI-audited and smoke-tested under ARM emulation; game and gesture logic
 covered by automated tests. On-TV feedback drove this release; motion behaviour on real remotes
 still needs confirming
-([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.4/docs/TV_CHECKLIST.md)).
+([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.5/docs/TV_CHECKLIST.md)).
 
-## What changed since 0.2.3
+## What changed since 0.2.4
+
+Feedback: dropping did not work well, and the piece sometimes moved sideways before it fell.
+
+* **A downward flick never moves the piece sideways.**
+  * A small sideways movement just before the flick used to count as a swing. Swing moves
+    now come when the swing ends (a few hundredths of a second after the remote stops or
+    turns back), and a stroke that turns into a downward flick is dropped.
+  * The bounce after a flick can no longer move the piece during the short "move after a
+    drop" time.
+* **Drops in the circle style were sometimes swallowed.** A sideways wind-up followed by the
+  flick looks like the start of a circle, and that blocked the drop. A circle in progress no
+  longer blocks drops: a drop needs a nearly straight, fast downward stroke, which a circle's
+  side is not.
+* A swing cut short (for example by a wrist roll in the twist style) can no longer let its
+  pull back move the piece the other way.
+* **New test**: 120 sloppy drops (slightly diagonal, with a sideways wind-up before and a
+  sideways recoil after) all drop and never move the piece, in both rotation styles.
+
+## Earlier: 0.2.4 (since 0.2.3)
 
 Feedback on 0.2.3: after a while a remote error appeared and was immediately covered by a
 menu; drop by flicking worked poorly and after a few minutes not at all.
@@ -116,13 +135,13 @@ pointer did not show.
 
 ## Downloads
 
-* `io.github.danzig666.lumablocks_0.2.4_arm.ipk`: **Luma Blocks**
-* `io.github.danzig666.lumablocks.debug_0.2.4_arm.ipk`: **Luma Blocks (Dev)**, a separate
+* `io.github.danzig666.lumablocks_0.2.5_arm.ipk`: **Luma Blocks**
+* `io.github.danzig666.lumablocks.debug_0.2.5_arm.ipk`: **Luma Blocks (Dev)**, a separate
   identity with separate saves
 * `SHA256SUMS.txt`, plus the Homebrew Channel manifest
 
 Install: Developer Mode (`ares-install`) or Homebrew Channel / Dev Manager. See
-[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.4/docs/INSTALL.md).
+[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.5/docs/INSTALL.md).
 
 **For testers:** please run Settings → Calibrate the remote first. If gestures still feel wrong,
 turn on Settings → More → Developer options, open **Input diagnostics**, record a trace with Red

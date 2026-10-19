@@ -339,7 +339,11 @@ impl GestureEngine {
         let recently_rotated =
             (f.t_us.saturating_sub(self.last_rotate_us) as f32 / 1000.0) < c.drop_after_rotate_block_ms;
         if self.profile.gesture_drop {
-            let blocked = rotating || recently_rotated || !commits.is_empty();
+            // A twist in progress blocks a drop. A circle candidate does not: the drop needs a
+            // nearly straight, fast downward stroke, which a circle's side is not, while a
+            // small sideways wind-up before a flick often looks like the start of a circle.
+            let twisting = self.twist.phase == Phase::Candidate;
+            let blocked = twisting || recently_rotated || !commits.is_empty();
             if let Some(cm) = self.drop.update(&f, &c, blocked) {
                 commits.push(cm);
             }
@@ -357,8 +361,10 @@ impl GestureEngine {
             // curves away like a circle, so a circle candidate need not block it (a curved
             // swing looks like the start of one); a committed circle still cancels it.
             let rotation_blocks = rotating && !circles;
-            let blocked = rotation_blocks || self.drop.is_candidate() || !commits.is_empty() || settling;
-            moves = self.swing.update(&f, &c, circles, blocked);
+            let blocked = rotation_blocks || !commits.is_empty() || settling;
+            // A drop owns its wind-up and its recoil: no sideways move from either.
+            let dropping = self.drop.is_candidate() || self.drop.is_latched();
+            moves = self.swing.update(&f, &c, circles, blocked, dropping);
             // A stroke that moved the piece is sideways movement: a circle starts after it,
             // so its out-and-back loop can never add up to a turn.
             if self.swing.is_moving_stroke() || !moves.is_empty() {

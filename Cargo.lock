@@ -110,7 +110,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "luma-app"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "cc",
  "fontdue",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "luma-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "luma-input"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "serde",
  "serde_json",

@@ -56,10 +56,11 @@ pure crates and runs on any desktop.
     pull back are rejected.
   * *Swing / Flick* (`Swing`): a quick, horizontally dominant stroke measured from where the
     movement began. Swing moves by `swing_columns` of the travel (the first column early, each
-    further one `swing_col_growth` wider); Flick moves one column per stroke. Without circles the
-    columns come live; with circles they are held until the stroke ends and dropped if it
-    curves away at speed (the side of a circle keeps its speed, a swing slows down before it
-    stops or turns back). A rejected stroke still opens a return window, so its pull back
+    further one `swing_col_growth` wider); Flick moves one column per stroke. The columns are
+    held until the stroke ends and dropped if it curves away at speed (the side of a circle or
+    the wind-up of a downward flick keeps its speed, a swing slows down before it stops or
+    turns back). A drop candidate or a just-committed drop owns the motion: no stroke starts
+    or commits during its wind-up or recoil. A rejected stroke still opens a return window, so its pull back
     never moves the piece the other way. When the stroke ends, opposite motion within a window and
     up to 1.6× the stroke's travel is the **return pull** and moves nothing; the window closes
     early when the remote rests or the player continues in the same direction. Slow motion never
@@ -69,7 +70,9 @@ pure crates and runs on any desktop.
     duration. After a commit it stays latched across piece spawns until a minimum time has
     passed *and* the remote has stopped moving down (resting, recoiling or moving sideways).
 * **Arbitration** (`engine.rs`):
-  * A circle candidate owns the trajectory and blocks drops. It does not block a held swing
+  * A twist candidate blocks drops; a circle candidate does not (a drop needs a nearly
+    straight, fast downward stroke, which a circle's side is not, and a small sideways wind-up
+    before a flick often looks like the start of a circle). A circle candidate does not block a held swing
     stroke (a curved swing looks like the start of a circle); a stroke that moved the piece
     restarts the circle window, so a swing's out-and-back loop never adds up to a turn.
   * A twist candidate blocks drops. Any candidate or recent commit freezes pointing, and pointing

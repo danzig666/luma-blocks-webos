@@ -6,7 +6,7 @@ use luma_input::calib::Calibration;
 use luma_input::config::{HorizontalStyle, Profile, RotationStyle, Thresholds};
 use luma_input::engine::GestureEngine;
 use luma_input::sample::MotionSample;
-use luma_input::synth::{gestures, Synth};
+use luma_input::synth::{ease, gestures, Synth};
 use luma_input::Gesture;
 
 fn feed(e: &mut GestureEngine, samples: &[MotionSample]) -> Vec<Gesture> {
@@ -192,4 +192,69 @@ fn gestures_return_after_a_reset_and_twists_keep_working_with_a_shaky_hand() {
     // The twist right after each reset may still fall in the re-arm wait (0.7 s of very shaky
     // motion); every later one must work.
     assert!(rot >= 8, "{rot}/10 twists: {got:?}");
+}
+
+/// Downward flicks as people make them: slightly diagonal, starting with a little sideways
+/// wind-up and recoiling up and to the side. Each must drop and never move the piece.
+#[test]
+fn sloppy_drops_never_move_sideways() {
+    for rot in [RotationStyle::Twist, RotationStyle::Circle] {
+        let p = Profile {
+            rotation: rot,
+            horizontal: HorizontalStyle::Swing,
+            ..Profile::default()
+        };
+        let mut bad = Vec::new();
+        let mut missed = 0;
+        for i in 0..60u64 {
+            let r = |k: u64| var(i + 5000, k);
+            let hz = [50.0, 60.0, 100.0][(i % 3) as usize];
+            let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+            let mut s = Synth::new(hz, 300 + i);
+            feed(&mut e, &s.hold(500.0));
+            s.tremor_deg = lerp(0.05, 0.4, r(1));
+            let side = if r(2) < 0.5 { -1.0 } else { 1.0 };
+            let amp = lerp(12.0, 26.0, r(3));
+            let ms = lerp(110.0, 220.0, r(4));
+            let diag = lerp(0.0, 0.35, r(5)) * side; // sideways drift during the flick
+            let windup = lerp(0.0, 3.0, r(6)) * side; // small sideways move just before
+            let windup_ms = lerp(60.0, 140.0, r(7));
+            let recoil = lerp(0.3, 0.8, r(8));
+            let recoil_side = lerp(-2.5, 2.5, r(9));
+            let mut v = s.motion(windup_ms, |q| (windup * ease(q), 0.0, 0.0));
+            v.extend(s.motion(ms, |q| (diag * amp * ease(q), -amp * ease(q), 0.0)));
+            v.extend(s.motion(lerp(150.0, 300.0, r(10)), |q| {
+                (recoil_side * ease(q), amp * recoil * ease(q), 0.0)
+            }));
+            v.extend(s.hold(400.0));
+            let got = feed(&mut e, &v);
+            let drops = got.iter().filter(|g| **g == Gesture::HardDrop).count();
+            if drops == 0 {
+                missed += 1;
+                if std::env::var("NATURAL_VERBOSE").is_ok() {
+                    println!(
+                        "missed #{i} {rot:?} hz {hz} windup {windup:.1}/{windup_ms:.0} diag {diag:.2} amp {amp:.0} ms {ms:.0}: {got:?}"
+                    );
+                }
+            }
+            if got
+                .iter()
+                .any(|g| matches!(g, Gesture::MoveLeft | Gesture::MoveRight))
+            {
+                bad.push(format!(
+                    "#{i} hz {hz} windup {windup:.1} diag {diag:.2} recoil side {recoil_side:.1}: {got:?}"
+                ));
+            }
+        }
+        println!(
+            "{rot:?}: 60 sloppy drops, missed {missed}, sideways moves in {}",
+            bad.len()
+        );
+        assert!(
+            bad.is_empty() && missed <= 3,
+            "{rot:?}: missed {missed}/60, sideways in {}:\n{}",
+            bad.len(),
+            bad.join("\n")
+        );
+    }
 }

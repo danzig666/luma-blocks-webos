@@ -161,7 +161,7 @@ impl Default for Thresholds {
 
             swing_start_speed: 0.8,
             swing_stop_speed: 0.3,
-            swing_end_ms: 60.0,
+            swing_end_ms: 45.0,
             swing_dominance: 1.3,
             swing_col_sh: 0.10,
             swing_first_col: 0.5,
