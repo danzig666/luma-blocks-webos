@@ -58,6 +58,8 @@ pub struct Settings {
     pub zen_level: u32,
     /// After a hard drop the piece can still be slid or turned this long, ms (0 = off).
     pub drop_slide_ms: u32,
+    /// Show the small live remote next to the board while playing with motion.
+    pub remote_hud: bool,
     /// Hide the system cursor during play while the motion sensor is streaming.
     pub hide_cursor: bool,
     pub developer: bool,
@@ -86,6 +88,7 @@ impl Default for Settings {
             marathon_start_level: 1,
             zen_level: 1,
             drop_slide_ms: DROP_SLIDE_SHORT_MS,
+            remote_hud: true,
             hide_cursor: true,
             developer: false,
             legacy_quat_order: LegacyQuatOrder::default(),

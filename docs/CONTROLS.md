@@ -37,6 +37,11 @@
 | **Move after a drop** | after a drop (gesture or OK) the piece rests on the stack for a moment before it locks; a late swing, twist or button press still slides or turns it, and it drops straight down again if it slides off a ledge. A swing that is under way when the time runs out holds the piece up to 0.4 s longer, so its move still lands. A shrinking line under the piece shows the time left. Drop again to lock at once. Off / Short (0.3 s, default) / Long (0.6 s). |
 
 * Rotation and sideways styles combine freely.
+* While you play with motion, a small live remote under the stats (MOTION) follows your
+  movement and turns with your wrist. An arc fills as a rotation gesture builds up, and every
+  recognized gesture flashes green (an arrow for a rotation, dots sliding left, right or down
+  for a move or a drop). It dims while the remote is not reporting. Turn it off with
+  Settings → **Remote indicator in play**.
 * Each gesture type has its own sensitivity (0.5–2.0). For Swing, higher sensitivity means
   fewer degrees per column.
 * **Gesture practice** shows each recognized gesture and how long it took to decide.

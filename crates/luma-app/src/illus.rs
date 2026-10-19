@@ -322,3 +322,100 @@ pub fn mini_t(g: &mut Gfx, cx: i32, cy: i32, s: f32, deg: f32) {
         );
     }
 }
+
+/// What the in-game remote indicator shows.
+pub struct RemoteLive {
+    /// Recent movement of the aim, screen heights (drifts back to the centre).
+    pub aim: (f32, f32),
+    /// Wrist twist, degrees (clockwise positive).
+    pub twist_deg: f32,
+    /// How close the current rotation gesture is to counting, -1..1 (sign = direction).
+    pub progress: f32,
+    /// Motion data is arriving.
+    pub live: bool,
+    /// The last recognized gesture and how far its flash has faded (0 = fresh, 1 = gone).
+    pub flash: Option<(luma_input::Gesture, f32)>,
+}
+
+/// Small live remote for the play screen: the remote follows the movement and turns with
+/// the wrist, an arc fills toward a rotation, and recognized gestures flash.
+pub fn remote_live(g: &mut Gfx, cx: i32, cy: i32, r: &RemoteLive, now: u64) {
+    use luma_input::Gesture;
+    let dim = if r.live { 1.0 } else { 0.35 };
+    let ring = 78;
+    g.round_outline(
+        Rect::new(cx - ring, cy - ring, (ring * 2) as u32, (ring * 2) as u32),
+        ring,
+        alpha(Color::RGB(255, 255, 255), 0.12 * dim),
+        2,
+    );
+    // Progress toward a rotation.
+    if r.live && r.progress.abs() > 0.08 {
+        let to = r.progress.clamp(-1.0, 1.0) * 120.0;
+        let c = if r.progress.abs() >= 1.0 {
+            theme::OK
+        } else {
+            theme::CYAN
+        };
+        arc(g, cx, cy, ring as f32 + 10.0, 0.0, to, alpha(c, 0.8));
+    }
+    // The remote: offset by recent movement, rotated by the twist.
+    let k = 260.0;
+    let px = cx + (r.aim.0 * k).clamp(-48.0, 48.0) as i32;
+    let py = cy + (r.aim.1 * k).clamp(-48.0, 48.0) as i32;
+    let (w, h) = (22u32, 70u32);
+    let dst = Rect::new(px - w as i32 / 2, py - h as i32 / 2, w, h);
+    let body = scale(REMOTE, if r.live { 1.0 } else { 0.5 });
+    g.tex.block.set_color_mod(body.r, body.g, body.b);
+    g.tex.block.set_alpha_mod((230.0 * dim) as u8);
+    g.tex.block.set_blend_mode(sdl2::render::BlendMode::Blend);
+    let _ = g
+        .canvas
+        .copy_ex(&g.tex.block, None, dst, r.twist_deg as f64, None, false, false);
+    // Emitter at the tip, turning with the body.
+    let a = (r.twist_deg - 90.0).to_radians();
+    let tip = (px as f32 + 27.0 * a.cos(), py as f32 + 27.0 * a.sin());
+    let canvas = &mut g.canvas;
+    Gfx::tinted(
+        &mut g.tex.dot,
+        canvas,
+        Rect::new(tip.0 as i32 - 5, tip.1 as i32 - 5, 10, 10),
+        alpha(theme::CYAN, dim),
+        true,
+    );
+    // Recognized gesture.
+    let Some((gesture, t)) = r.flash else { return };
+    if t >= 1.0 {
+        return;
+    }
+    let a = 1.0 - t;
+    let c = alpha(theme::OK, a);
+    match gesture {
+        Gesture::RotateCw => arc(g, cx, cy, ring as f32 - 14.0, -60.0, 60.0, c),
+        Gesture::RotateCcw => arc(g, cx, cy, ring as f32 - 14.0, 60.0, -60.0, c),
+        Gesture::MoveLeft | Gesture::MoveRight | Gesture::HardDrop => {
+            let (dx, dy) = match gesture {
+                Gesture::MoveLeft => (-1.0, 0.0),
+                Gesture::MoveRight => (1.0, 0.0),
+                _ => (0.0, 1.0),
+            };
+            // Three dots sliding outward in the gesture's direction.
+            let travel = 30.0 * t;
+            for i in 0..3 {
+                let d = 34.0 + i as f32 * 16.0 + travel;
+                let x = cx as f32 + dx * d;
+                let y = cy as f32 + dy * d;
+                let s = 8 + i * 3;
+                let canvas = &mut g.canvas;
+                Gfx::tinted(
+                    &mut g.tex.dot,
+                    canvas,
+                    Rect::new(x as i32 - s / 2, y as i32 - s / 2, s as u32, s as u32),
+                    alpha(theme::OK, a * (0.5 + 0.25 * i as f32)),
+                    true,
+                );
+            }
+        }
+    }
+    let _ = now;
+}

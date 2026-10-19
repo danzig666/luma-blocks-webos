@@ -3,6 +3,7 @@
 use crate::app::{motion_summary, App, PauseReason, Screen};
 use crate::audio::Sfx;
 use crate::gfx::{alpha, theme, Face, Gfx, H, W};
+use crate::illus::RemoteLive as RemoteLiveState;
 use crate::store::ControlMode;
 use crate::strings as S;
 use crate::ui::{Ev, Item, UiIn};
@@ -41,6 +42,7 @@ enum Act {
     Sideways,
     DropGesture,
     DropSlide,
+    RemoteHud,
     SensSide,
     SensRot,
     SensDrop,
@@ -202,6 +204,10 @@ impl App {
                     (
                         Item::choice(S::DROP_SLIDE, drop_slide_label(st.drop_slide_ms)),
                         Act::DropSlide,
+                    ),
+                    (
+                        Item::choice(S::REMOTE_HUD, on_off(st.remote_hud)).disabled(!motion),
+                        Act::RemoteHud,
                     ),
                     (
                         Item::choice(S::SENS_SIDE, format!("{:.1}", p.sens_horizontal)).disabled(!motion),
@@ -487,6 +493,7 @@ impl App {
                 st.profile.horizontal = order[(i + d).rem_euclid(3) as usize];
             }
             Act::DropGesture => st.profile.gesture_drop = !st.profile.gesture_drop,
+            Act::RemoteHud => st.remote_hud = !st.remote_hud,
             Act::DropSlide => {
                 let opts = [
                     0,
@@ -620,6 +627,50 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// The small live remote under the stats while playing with motion.
+    fn draw_remote_hud(&mut self, g: &mut Gfx, now: u64) {
+        if !self.motion_control_active() || !self.store.settings.remote_hud {
+            return;
+        }
+        let e = &self.engine;
+        let f = e.debug.last_frame;
+        let eff = luma_input::config::effective(&e.cfg, &e.profile);
+        let progress = match e.profile.rotation {
+            RotationStyle::Twist if e.twist.phase == luma_input::recognize::Phase::Candidate => {
+                e.twist.last_delta / eff.twist_enter_deg.max(1.0)
+            }
+            RotationStyle::Circle if e.circle.is_candidate() => {
+                e.circle.best.turn_deg / eff.circle_min_turn_deg.max(1.0)
+            }
+            _ => 0.0,
+        };
+        let flash = e.debug.recent.back().map(|c| {
+            (
+                c.gesture,
+                (now.saturating_sub(c.t_us) as f32 / 650_000.0).min(1.0),
+            )
+        });
+        let live = RemoteLiveState {
+            aim: (f.aim.x, f.aim.y),
+            twist_deg: f.twist_deg.unwrap_or(0.0),
+            progress,
+            live: self.motion.is_streaming(now),
+            flash,
+        };
+        let lx = BOARD_X - 70;
+        let cx = lx - 95;
+        let cy = BOARD_Y + 810;
+        g.text_right(
+            S::HUD_MOTION,
+            lx,
+            BOARD_Y + 690,
+            22.0,
+            Face::Semi,
+            theme::TEXT_FAINT,
+        );
+        crate::illus::remote_live(g, cx, cy, &live, now);
     }
 
     fn draw_settings_help(&mut self, g: &mut Gfx) {
@@ -823,6 +874,7 @@ impl App {
                 if let Some((text, c, a)) = note {
                     g.text_centered(text, W / 2, BOARD_Y - 60, 28.0, Face::Regular, alpha(c, a));
                 }
+                self.draw_remote_hud(g, now);
                 let ready = self.session.as_ref().and_then(|s| s.ready_until).is_some();
                 if ready {
                     g.text_centered(

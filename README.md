@@ -14,7 +14,7 @@ sensor or with ordinary remote buttons.** Native Rust, SDL2 and OpenGL ES 2, tru
 | | |
 |---|---|
 | ![Game](docs/screenshots/game.png) | ![Menu](docs/screenshots/menu.png) |
-| Marathon on true black: soft halos, dim outlined landing preview | Main menu |
+| Marathon on true black: soft halos, dim outlined landing preview, and the live remote indicator (bottom left) mid-twist | Main menu |
 | ![Gesture style](docs/screenshots/onboarding-style.png) | ![Line clear](docs/screenshots/line-clear.png) |
 | First-run choice of gesture styles, with animated illustrations | A four-line clear: flash, centre-out dissolve, stack falls into place |
 | ![Setup: twist](docs/screenshots/calibration-twist.png) | ![Setup: try it](docs/screenshots/calibration-try.png) |

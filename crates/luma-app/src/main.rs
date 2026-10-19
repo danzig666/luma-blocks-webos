@@ -264,6 +264,12 @@ fn screenshots(app: &mut app::App, g: &mut gfx::Gfx, dir: &str) -> Result<(), St
         s.game.apply(Action::MoveLeft);
     }
     shot(app, g, "game", 20)?;
+    // The live remote mid-twist (the twist about to count), and the flash just after.
+    if let Some(sim) = app.motion.sim() {
+        sim.play(motion::Script::TwistCw);
+    }
+    shot(app, g, "game-remote-twist", 9)?;
+    shot(app, g, "game-remote-flash", 14)?;
     app.pause(app::PauseReason::User);
     shot(app, g, "pause", 10)?;
     app.quit_to_menu();
