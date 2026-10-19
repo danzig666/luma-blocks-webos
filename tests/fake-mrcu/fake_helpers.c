@@ -1,7 +1,8 @@
 // Host stand-in for the TV's libhelpers.so.2 that imitates luna://com.webos.service.mrcu
 // as LG documents it: one sample per second until setSensorInterval is called on a live
 // subscription (an interval set before subscribing is ignored, the worst case).
-// FAKE_MRCU=ok (default) | denied | silent | invalidtypes | sleepy (asleep for the first 1.5 s). Used by scripts/motion-probe-test.sh.
+// FAKE_MRCU=ok (default) | denied | silent | invalidtypes | sleepy (asleep for the first 1.5 s)
+// | stall (the first subscription silently stops delivering after 1.5 s). Used by scripts/motion-probe-test.sh.
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -23,9 +24,11 @@ static int awake(void){ if(strcmp(getenv("FAKE_MRCU")?getenv("FAKE_MRCU"):"ok","
 static const char* mode(void){ const char* m=getenv("FAKE_MRCU"); return m?m:"ok"; }
 static void reply(HContext* c, const char* s){ Msg m; snprintf(m.text,sizeof m.text,"%s",s); c->callback(NULL,&m,c); }
 typedef struct { HContext* c; char uri[256]; char payload[512]; } Job;
+static int stalled_once = 0;
 static void* stream(void* arg){
-  HContext* c=arg; double t=0; char buf[1024];
+  HContext* c=arg; double t=0; char buf[1024]; double t0=mono();
   for(;;){
+    if(!strcmp(mode(),"stall") && !stalled_once && mono()-t0 > 1.5){ stalled_once=1; break; }
     pthread_mutex_lock(&mu); int live = subscribed && sub_ctx==c; int iv=interval_ms; pthread_mutex_unlock(&mu);
     if(!live) break;
     usleep(iv*1000); t+=iv/1000.0;

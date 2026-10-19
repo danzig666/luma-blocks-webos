@@ -1,13 +1,36 @@
-# Luma Blocks 0.2.3 (test build)
+# Luma Blocks 0.2.4 (test build)
 
 A minimalist falling-block puzzle for LG webOS TVs with Magic Remote motion controls.
 
 **Pre-release.** Built, ABI-audited and smoke-tested under ARM emulation; game and gesture logic
 covered by automated tests. On-TV feedback drove this release; motion behaviour on real remotes
 still needs confirming
-([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.3/docs/TV_CHECKLIST.md)).
+([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.4/docs/TV_CHECKLIST.md)).
 
-## What changed since 0.2.2
+## What changed since 0.2.3
+
+Feedback on 0.2.3: after a while a remote error appeared and was immediately covered by a
+menu; drop by flicking worked poorly and after a few minutes not at all.
+
+* **Drops (and gestures in general) no longer switch themselves off.**
+  * After a drop, the next drop needed the remote to be completely still first. With a busy
+    or slightly shaky hand that rarely happens in play, so drops stopped working. Now it is
+    enough that the remote has stopped moving down.
+  * After a pause or a motion hiccup, all gestures waited for complete stillness before
+    working again; the first hiccup could switch them off for good. Now the wait relaxes over
+    about two seconds and ends after 2.5 s at the latest.
+* **Motion hiccups no longer interrupt play.**
+  * A short gap in the motion stream shows "Remote motion reconnecting… buttons still work"
+    above the board, and play goes on. The app notices a stalled stream after about a second
+    and re-establishes it (about two seconds in all).
+  * Play stops only when motion stays away for five seconds while no buttons are used. The
+    message then stays readable, and play continues by itself (through Ready) once motion is
+    back, with a short "Remote motion is back" note.
+  * The grey "Motion: …" line counts how often the stream had to reconnect.
+* **New tests**: drops with a never-resting, shaky hand (12/12), gestures returning after
+  resets, and a stand-in stream that silently dies and must be re-established.
+
+## Earlier: 0.2.3 (since 0.2.2)
 
 * **Pointing went the wrong way** (piece and aim dot mirrored left/right). The Pointing style
   takes absolute aim from the remote's orientation, while swings, the motion setup and the
@@ -93,13 +116,13 @@ pointer did not show.
 
 ## Downloads
 
-* `io.github.danzig666.lumablocks_0.2.3_arm.ipk`: **Luma Blocks**
-* `io.github.danzig666.lumablocks.debug_0.2.3_arm.ipk`: **Luma Blocks (Dev)**, a separate
+* `io.github.danzig666.lumablocks_0.2.4_arm.ipk`: **Luma Blocks**
+* `io.github.danzig666.lumablocks.debug_0.2.4_arm.ipk`: **Luma Blocks (Dev)**, a separate
   identity with separate saves
 * `SHA256SUMS.txt`, plus the Homebrew Channel manifest
 
 Install: Developer Mode (`ares-install`) or Homebrew Channel / Dev Manager. See
-[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.3/docs/INSTALL.md).
+[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.4/docs/INSTALL.md).
 
 **For testers:** please run Settings → Calibrate the remote first. If gestures still feel wrong,
 turn on Settings → More → Developer options, open **Input diagnostics**, record a trace with Red

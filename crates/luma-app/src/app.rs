@@ -45,6 +45,11 @@ pub enum Screen {
     Developer,
 }
 
+/// Play stops for lost motion only after it has been missing this long...
+const MOTION_LOST_PAUSE_US: u64 = 5_000_000;
+/// ...and no button was used for this long.
+const MOTION_LOST_IDLE_US: u64 = 3_000_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PauseReason {
     User,
@@ -164,6 +169,10 @@ pub struct App {
     /// When the current screen was entered (transitions and input guards).
     pub screen_since: u64,
     pub cursor_test_hidden: bool,
+    /// A short message over the game (text, shown since).
+    pub notice: Option<(&'static str, u64)>,
+    /// While the motion-lost screen is up: since when the stream has been back.
+    motion_back_since: Option<u64>,
     pub diag_counts: (u64, u64),
 }
 
@@ -218,6 +227,8 @@ impl App {
             settings_dirty: false,
             screen_since: 0,
             cursor_test_hidden: false,
+            notice: None,
+            motion_back_since: None,
             diag_counts: (0, 0),
         };
         if screen == Screen::Onboard {
@@ -737,8 +748,17 @@ impl App {
             Screen::Game => self.update_game(now, commits),
             Screen::Calibrate => self.update_calibration(now, &commits),
             Screen::MotionLost => {
+                // Motion is back: carry on by itself (through Ready), so the message is not
+                // swapped for a menu the moment the stream returns.
                 if self.motion.is_streaming(now) {
-                    self.go(Screen::Pause);
+                    let t0 = *self.motion_back_since.get_or_insert(now);
+                    if now - t0 > 600_000 {
+                        self.motion_back_since = None;
+                        self.notice = Some((crate::strings::MOTION_BACK, now));
+                        self.resume();
+                    }
+                } else {
+                    self.motion_back_since = None;
                 }
             }
             Screen::Diagnostics | Screen::Developer => self.update_diag(&commits),
@@ -782,6 +802,7 @@ impl App {
     }
 
     fn update_game(&mut self, now: u64, commits: Vec<luma_input::Commit>) {
+        let last_activity = self.last_activity;
         let motion_on = self.motion_control_active();
         let streaming = self.motion.is_streaming(now);
         let needs_sensor = self.store.settings.profile.rotation == RotationStyle::Twist;
@@ -806,8 +827,11 @@ impl App {
         }
         if motion_on && needs_sensor && s.ready_until.is_none() {
             if s.sensor_seen && !streaming {
+                // Short gaps (the stream reconnecting) only show a note; play stops only when
+                // motion stays away and the buttons are not being used either.
                 let since = *s.missing_since.get_or_insert(now);
-                if now - since > 1_500_000 {
+                let using_buttons = now.saturating_sub(last_activity) < MOTION_LOST_IDLE_US;
+                if now - since > MOTION_LOST_PAUSE_US && !using_buttons {
                     self.pause(PauseReason::Motion);
                     return;
                 }
@@ -1010,6 +1034,14 @@ impl App {
         }
     }
 
+    /// How long motion has been missing during play (for the reconnecting note).
+    pub fn motion_gap_us(&self, now: u64) -> Option<u64> {
+        self.session
+            .as_ref()
+            .and_then(|s| s.missing_since)
+            .map(|t| now.saturating_sub(t))
+    }
+
     /// One line on the motion connection for ordinary screens, so a photo of the screen says
     /// what failed (the full log is in Input diagnostics).
     pub fn motion_detail(&self) -> Option<String> {
@@ -1018,6 +1050,9 @@ impl App {
         }
         let st = self.motion.status();
         let mut d = format!("Motion: {}", st.state.label());
+        if st.stalls > 0 {
+            d += &format!(" · {} reconnects", st.stalls);
+        }
         if let Some(r) = &st.registration {
             d += &format!(" · via {r}");
         }

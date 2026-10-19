@@ -85,6 +85,8 @@ pub struct Status {
     pub malformed: u64,
     /// Notes written so far (the log keeps only the latest).
     pub notes: u64,
+    /// Times the stream stalled and was re-established.
+    pub stalls: u64,
 }
 
 impl Default for Status {
@@ -102,6 +104,7 @@ impl Default for Status {
             generation: 0,
             malformed: 0,
             notes: 0,
+            stalls: 0,
         }
     }
 }
@@ -191,7 +194,8 @@ struct Worker {
     want_ms: u32,
     /// Data arrivals in the current one-second window, to notice a too-slow stream.
     rate_window: (u64, u32),
-    interval_fixes: u32,
+    /// When the interval was last re-requested (rate limit for re-requests).
+    last_interval_fix_us: u64,
     /// A resubscription waiting for the service to confirm the cancel (deadline).
     resubscribe_at: Option<u64>,
 }
@@ -552,8 +556,8 @@ impl Worker {
         let hz = *n as f32 * 1e6 / t_us.saturating_sub(*start).max(1) as f32;
         self.rate_window = (t_us, 1);
         let want_hz = 1000.0 / self.want_ms.max(1) as f32;
-        if hz < want_hz * 0.4 && self.interval_fixes < 20 {
-            self.interval_fixes += 1;
+        if hz < want_hz * 0.4 && t_us.saturating_sub(self.last_interval_fix_us) > 2_000_000 {
+            self.last_interval_fix_us = t_us;
             self.shared.status(|s| {
                 s.note(format!(
                     "stream at {hz:.0}/s, wanted {want_hz:.0}/s; setting the interval again"
@@ -585,9 +589,20 @@ impl Worker {
             State::Probing if now - self.probe_sent_us > 2_000_000 => {
                 self.next_connection("no reply");
             }
+            // A live stream that stops for over a second has stalled; a fresh subscription
+            // starts at one sample per second, so it gets longer.
             State::Streaming | State::Subscribed | State::Subscribing
-                if now - self.last_data_us > 2_500_000 =>
+                if now - self.last_data_us
+                    > if self.state() == State::Streaming {
+                        1_200_000
+                    } else {
+                        2_500_000
+                    } =>
             {
+                self.shared.status(|s| {
+                    s.stalls += 1;
+                    s.note("stream stalled; checking the remote".into());
+                });
                 // Stream stalled: the remote may have gone to sleep or the subscription died.
                 if self.legacy {
                     self.resubscribe();
@@ -738,7 +753,7 @@ impl MotionHub {
                 types_idx: 0,
                 want_ms: 10,
                 rate_window: (0, 0),
-                interval_fixes: 0,
+                last_interval_fix_us: 0,
                 resubscribe_at: None,
             }
             .run()

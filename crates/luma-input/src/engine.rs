@@ -46,6 +46,8 @@ pub struct GestureEngine {
     pub swing: Swing,
     pub drop: Drop,
     armed: bool,
+    /// First frame seen while disarmed (how long re-arming has been waiting).
+    disarmed_us: Option<u64>,
     still_since: Option<u64>,
     guard_until: u64,
     freeze_until: u64,
@@ -65,6 +67,8 @@ pub struct GestureEngine {
 }
 
 const RECENT: usize = 12;
+/// Re-arm after this long even without a calm moment, ms.
+const REARM_GIVE_UP_MS: f32 = 2500.0;
 
 impl GestureEngine {
     pub fn new(cfg: Thresholds, profile: Profile, calib: Calibration) -> Self {
@@ -81,6 +85,7 @@ impl GestureEngine {
             swing: Swing::default(),
             drop: Drop::default(),
             armed: false,
+            disarmed_us: None,
             still_since: None,
             guard_until: 0,
             freeze_until: 0,
@@ -282,18 +287,28 @@ impl GestureEngine {
     fn frame(&mut self, f: Frame) {
         self.debug.last_frame = f;
         let c = self.eff.clone();
-        // Re-arm after reset: wait for stillness.
-        let twist_still = f.twist_rate_dps.is_none_or(|r| r.abs() < c.still_twist_dps);
-        let still = f.vel.len() < c.still_speed_sh && twist_still;
+        // Re-arm after reset: wait for calm. "Calm" starts as true stillness and relaxes the
+        // longer it takes (up to 4x after about two seconds), then gives up waiting: a shaky
+        // or busy hand must never leave gestures off for good.
+        if self.armed {
+            self.disarmed_us = None;
+        }
+        let waited_ms = (f.t_us - *self.disarmed_us.get_or_insert(f.t_us)) as f32 / 1000.0;
+        let relax = 1.0 + (waited_ms / 600.0).min(3.0);
+        let twist_still = f
+            .twist_rate_dps
+            .is_none_or(|r| r.abs() < c.still_twist_dps * relax);
+        let still = f.vel.len() < c.still_speed_sh * relax && twist_still;
         if still {
             self.still_since.get_or_insert(f.t_us);
         } else {
             self.still_since = None;
         }
         if !self.armed {
-            let ok = self
-                .still_since
-                .is_some_and(|s| (f.t_us - s) as f32 / 1000.0 >= c.rearm_still_ms);
+            let ok = waited_ms >= REARM_GIVE_UP_MS
+                || self
+                    .still_since
+                    .is_some_and(|s| (f.t_us - s) as f32 / 1000.0 >= c.rearm_still_ms);
             if ok {
                 self.armed = true;
                 self.reset_recognizers();

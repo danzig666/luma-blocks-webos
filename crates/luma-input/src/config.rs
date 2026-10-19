@@ -108,7 +108,8 @@ pub struct Thresholds {
     pub drop_max_heading_dev_deg: f32,
     /// Longest burst counted as a drop, ms.
     pub drop_max_ms: f32,
-    /// After a drop: stillness needed to re-arm, ms (on top of `drop_min_latch_ms`).
+    /// After a drop: time without downward motion needed to re-arm, ms (on top of
+    /// `drop_min_latch_ms`).
     pub drop_rearm_still_ms: f32,
     /// Minimum time a drop stays latched, ms.
     pub drop_min_latch_ms: f32,

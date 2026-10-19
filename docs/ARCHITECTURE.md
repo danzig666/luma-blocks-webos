@@ -67,7 +67,7 @@ pure crates and runs on any desktop.
     the remote back after moving it.
   * *Drop*: a high peak speed, a straight-down heading throughout, minimum travel and a short
     duration. After a commit it stays latched across piece spawns until a minimum time has
-    passed *and* the remote has been still.
+    passed *and* the remote has stopped moving down (resting, recoiling or moving sideways).
 * **Arbitration** (`engine.rs`):
   * A circle candidate owns the trajectory and blocks drops. It does not block a held swing
     stroke (a curved swing looks like the start of a circle); a stroke that moved the piece
@@ -77,7 +77,8 @@ pure crates and runs on any desktop.
   * Only one discrete action is accepted per trajectory.
   * A button press cancels candidates and adds a short guard against press jiggle.
   * After `reset()` (pause, resume, focus change, remote wake or reconnection) nothing commits
-    until the remote has been still.
+    until the remote has been calm. "Calm" starts as stillness and relaxes over about two
+    seconds; after 2.5 s gestures re-arm regardless, so a shaky hand never leaves them off.
 * **Calibration** probes measure the rotation axis of each guided motion from the integrated
   gyro at its largest excursion (so out-and-back motions read correctly), and the try-it step
   can flip the twist, sideways and drop directions individually.

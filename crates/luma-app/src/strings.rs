@@ -45,7 +45,9 @@ pub const GET_READY: &str = "Ready";
 // Motion loss
 pub const MOTION_LOST_TITLE: &str = "Remote motion is unavailable";
 pub const MOTION_LOST_BODY: &str =
-    "Move the remote to wake it, then try again. You can also keep playing with the buttons.";
+    "Move the remote to wake it; the game continues by itself when motion is back. You can also keep playing with the buttons.";
+pub const MOTION_GAP: &str = "Remote motion reconnecting… buttons still work";
+pub const MOTION_BACK: &str = "Remote motion is back";
 pub const TRY_AGAIN: &str = "Try again";
 pub const PLAY_WITH_BUTTONS: &str = "Play with buttons";
 

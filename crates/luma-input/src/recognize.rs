@@ -811,7 +811,10 @@ impl Drop {
                 }
             }
             Phase::Latched => {
-                if speed < c.still_speed_sh {
+                // Re-arm once the remote has stopped going down (resting, recoiling upward or
+                // moving sideways all count). Requiring true stillness kept the drop disarmed
+                // for good with a busy or shaky hand.
+                if vy < c.drop_enter_speed * 0.3 || speed < c.still_speed_sh {
                     self.still_since.get_or_insert(f.t_us);
                 } else {
                     self.still_since = None;

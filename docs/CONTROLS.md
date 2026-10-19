@@ -75,7 +75,9 @@ Tips:
 
 | Symptom | Try |
 |---|---|
-| "Remote motion is unavailable" | Move the remote to wake it, then **Try again**. Or choose **Play with buttons**; the game never resumes on its own. |
+| "Remote motion reconnecting… buttons still work" above the board | The motion stream hiccupped; it usually comes back within two seconds by itself. Play goes on, and buttons work meanwhile. |
+| "Remote motion is unavailable" | Motion stayed away for five seconds while no buttons were used. Move the remote to wake it: the game carries on by itself (through Ready) as soon as motion is back. Or choose **Try again** or **Play with buttons**. The grey "Motion: …" line says what failed and how often the stream had to reconnect. |
+| Drops (or all gestures) stop working after a while | Fixed in 0.2.4: gestures no longer wait for the remote to be perfectly still before they work again. If it still happens, open Input diagnostics and note the drop state. |
 | "The remote's motion sensor is not answering" | Move the remote. The grey "Motion: …" line under the message says which step failed; please send a photo of it. The app keeps retrying every few seconds. |
 | Menu says "Motion not available" / "not permitted" | Your TV or remote does not offer the sensor to apps. Circles, flicks and pointing still work from the pointer; twist needs the sensor. Please report it with **Input diagnostics** (Settings → More → Developer options). |
 | The piece follows the remote back | Choose **Swinging** instead of Pointing (Settings → Move sideways by). |

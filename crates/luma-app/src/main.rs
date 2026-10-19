@@ -632,7 +632,21 @@ fn flow_test() -> i32 {
         s.sensor_seen = true;
     }
     wait(&mut b, 1800);
-    check("motion loss pauses with options", b.screen == Screen::MotionLost);
+    check(
+        "a short motion gap keeps playing with a note",
+        b.screen == Screen::Game && b.motion_gap_us(platform::now_us()).is_some(),
+    );
+    wait(&mut b, 4200);
+    check(
+        "lasting motion loss pauses with options",
+        b.screen == Screen::MotionLost,
+    );
+    b.motion = motion::MotionHub::simulated();
+    wait(&mut b, 1500);
+    check(
+        "play continues by itself when motion is back",
+        b.screen == Screen::Game && b.notice.is_some(),
+    );
     let _ = std::fs::remove_dir_all(&dir);
     if fails == 0 {
         println!("flow test passed");

@@ -128,3 +128,68 @@ fn natural_swings_move_and_never_rotate() {
     println!("{}", report.join("\n"));
     assert!(ok, "{}", report.join("\n"));
 }
+
+/// A tired, busy hand: strong tremor and constant small movement, never quite still. Every
+/// downward flick must still drop (the drop must re-arm without the remote resting).
+#[test]
+fn drops_keep_working_without_rest_and_with_strong_tremor() {
+    for rot in [RotationStyle::Twist, RotationStyle::Circle] {
+        let p = Profile {
+            rotation: rot,
+            horizontal: HorizontalStyle::Swing,
+            ..Profile::default()
+        };
+        let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+        let mut s = Synth::new(60.0, 77);
+        feed(&mut e, &s.hold(600.0));
+        s.tremor_deg = 0.7;
+        let mut drops = 0;
+        let mut other = Vec::new();
+        for i in 0..12 {
+            // Wander a little between drops: the hand never rests.
+            let w = if i % 2 == 0 { 2.0 } else { -2.0 };
+            feed(
+                &mut e,
+                &s.motion(500.0, |q| (w * q, 0.6 * (q * 6.0).sin(), 1.5 * (q * 4.0).sin())),
+            );
+            let got = feed(&mut e, &gestures::drop(&mut s, 16.0, 150.0));
+            drops += got.iter().filter(|g| **g == Gesture::HardDrop).count();
+            other.extend(got.into_iter().filter(|g| *g != Gesture::HardDrop));
+        }
+        assert_eq!(drops, 12, "{rot:?}: {drops}/12 drops, other {other:?}");
+    }
+}
+
+/// After a reset (pause, resume, a sensor hiccup) gestures must come back even if the hand is
+/// shaky and never fully rests, and twists must keep working through a busy session.
+#[test]
+fn gestures_return_after_a_reset_and_twists_keep_working_with_a_shaky_hand() {
+    let p = Profile {
+        rotation: RotationStyle::Twist,
+        horizontal: HorizontalStyle::Swing,
+        ..Profile::default()
+    };
+    let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+    let mut s = Synth::new(60.0, 78);
+    feed(&mut e, &s.hold(600.0));
+    s.tremor_deg = 0.7;
+    let mut got = Vec::new();
+    for i in 0..10 {
+        if i == 3 || i == 7 {
+            let t = s.t_us;
+            e.reset();
+            e.tick(t);
+        }
+        let w = if i % 2 == 0 { 1.5 } else { -1.5 };
+        feed(&mut e, &s.motion(700.0, |q| (w * q, 0.5 * (q * 6.0).sin(), 0.0)));
+        let dir = if i % 2 == 0 { 1.0 } else { -1.0 };
+        got.extend(feed(&mut e, &gestures::twist(&mut s, dir, 45.0, 200.0)));
+    }
+    let rot = got
+        .iter()
+        .filter(|g| matches!(g, Gesture::RotateCw | Gesture::RotateCcw))
+        .count();
+    // The twist right after each reset may still fall in the re-arm wait (0.7 s of very shaky
+    // motion); every later one must work.
+    assert!(rot >= 8, "{rot}/10 twists: {got:?}");
+}

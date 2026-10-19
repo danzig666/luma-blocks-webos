@@ -56,7 +56,9 @@ app as launched normally.
 - [ ] Rotating does not drag the piece sideways; after a circle the piece is back in its column.
 - [ ] A button press during motion play does not trigger a gesture.
 - [ ] Pause, resume (Ready waits for stillness), focus change (Home, then back), and motion loss
-      → "Remote motion is unavailable" → Try again / Play with buttons.
+      → a short gap shows "reconnecting" and play goes on; a lasting one shows "Remote motion is
+      unavailable" and play continues by itself when motion is back. Note the "reconnects"
+      count in the grey "Motion: …" line after a long session.
 - [ ] A 20-minute continuous session with pauses: frame timing (diagnostics footer), no stutter,
       no memory growth (`top` over SSH).
 - [ ] Quit mid-game, relaunch → "Pick up where you left off?" → Continue restores the board,
