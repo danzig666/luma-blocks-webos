@@ -32,6 +32,10 @@ pub enum State {
     Streaming,
     /// The remote's sensor is asleep (move the remote to wake it).
     Sleeping,
+    /// Subscribed and the remote is awake, but no data: the remote is resting or in button
+    /// mode (a key press hides the pointer and the remote stops reporting motion until it is
+    /// moved again).
+    Paused,
     /// Stopped on request (paused / backgrounded).
     Stopped,
     Unsupported(String),
@@ -52,6 +56,7 @@ impl State {
             State::Subscribed => "subscribed, waiting for data".into(),
             State::Streaming => "streaming".into(),
             State::Sleeping => "remote asleep".into(),
+            State::Paused => "paused (move the remote)".into(),
             State::Stopped => "stopped (paused)".into(),
             State::Unsupported(e) => format!("unsupported: {e}"),
             State::Denied(e) => format!("permission denied: {e}"),
@@ -198,7 +203,17 @@ struct Worker {
     last_interval_fix_us: u64,
     /// A resubscription waiting for the service to confirm the cancel (deadline).
     resubscribe_at: Option<u64>,
+    /// When the current pause in the data began.
+    paused_since: u64,
+    /// How long an awake remote may send nothing before the subscription is renewed; doubles
+    /// each time it did not help (a remote in button mode can stay quiet for minutes).
+    renew_after_us: u64,
+    /// A new subscription was made: its first data restarts gesture state.
+    fresh_subscription: bool,
 }
+
+const RENEW_FIRST_US: u64 = 4_000_000;
+const RENEW_MAX_US: u64 = 60_000_000;
 
 /// `sensorType` requests, tried in order when the service rejects a value as invalid.
 const SENSOR2_TYPE_CHOICES: [&str; 2] = [mrcu::SENSOR2_TYPES, "all"];
@@ -310,6 +325,7 @@ impl Worker {
     }
 
     fn subscribe(&mut self) {
+        self.fresh_subscription = true;
         // Late replies to an earlier subscription are ignored from now on.
         self.calls
             .retain(|(_, k)| !matches!(k, Call::Subscribe | Call::LegacySubscribe));
@@ -432,9 +448,29 @@ impl Worker {
             }
             Call::State => match mrcu::parse_state(payload) {
                 Ok(true) => {
-                    if self.want_running && !matches!(self.state(), State::Streaming | State::Subscribed) {
-                        self.shared.status(|s| s.note("remote awake".into()));
-                        self.resubscribe();
+                    let now = now_us();
+                    match self.state() {
+                        // Awake but quiet: usually button mode. Keep the subscription (data
+                        // resumes on it when the remote moves); renew it only after a while,
+                        // in case it died.
+                        State::Sleeping | State::Paused if self.want_running && self.sub_token != 0 => {
+                            self.set_state(State::Paused);
+                            if now.saturating_sub(self.paused_since) > self.renew_after_us {
+                                self.shared.status(|s| {
+                                    s.stalls += 1;
+                                    s.note("no data although the remote is awake; renewing".into())
+                                });
+                                self.renew_after_us = (self.renew_after_us * 2).min(RENEW_MAX_US);
+                                self.paused_since = now;
+                                self.resubscribe();
+                            }
+                        }
+                        State::Streaming | State::Subscribed | State::Subscribing => {}
+                        _ if self.want_running => {
+                            self.shared.status(|s| s.note("remote awake".into()));
+                            self.resubscribe();
+                        }
+                        _ => {}
                     }
                 }
                 Ok(false) => self.set_state(State::Sleeping),
@@ -465,13 +501,20 @@ impl Worker {
         }
         match r {
             Reply::Data(s) => {
-                let restarted = !matches!(self.state(), State::Streaming);
                 self.last_data_us = s.t_us;
                 if !legacy {
                     self.check_rate(s.t_us);
                 }
-                if restarted {
+                if self.fresh_subscription {
+                    // A new subscription: gesture state starts over. Data resuming on the
+                    // same subscription (the remote moved again) does not need that.
+                    self.fresh_subscription = false;
                     self.shared.status(|st| st.generation += 1);
+                }
+                if self.state() != State::Streaming {
+                    if matches!(self.state(), State::Paused | State::Sleeping) {
+                        self.renew_after_us = RENEW_FIRST_US;
+                    }
                     self.set_state(State::Streaming);
                 }
                 self.shared.push(s);
@@ -599,20 +642,23 @@ impl Worker {
                         2_500_000
                     } =>
             {
-                self.shared.status(|s| {
-                    s.stalls += 1;
-                    s.note("stream stalled; checking the remote".into());
-                });
-                // Stream stalled: the remote may have gone to sleep or the subscription died.
+                // No data: the remote may be resting, in button mode or asleep, or the
+                // subscription died. Ask the remote's state before doing anything.
                 if self.legacy {
+                    self.shared.status(|s| {
+                        s.stalls += 1;
+                        s.note("stream stalled; resubscribing".into());
+                    });
                     self.resubscribe();
                 } else {
-                    self.set_state(State::Sleeping);
+                    // (A fresh subscription counts from when it was made.)
+                    self.paused_since = self.last_data_us;
+                    self.set_state(State::Paused);
                     self.call("sensor2/getSensorState", "{}", Call::State);
                     self.next_action_us = now + 1_000_000;
                 }
             }
-            State::Sleeping | State::Failed(_) if now >= self.next_action_us => {
+            State::Sleeping | State::Paused | State::Failed(_) if now >= self.next_action_us => {
                 self.next_action_us = now + 1_000_000;
                 if self.legacy {
                     self.subscribe();
@@ -755,6 +801,9 @@ impl MotionHub {
                 rate_window: (0, 0),
                 last_interval_fix_us: 0,
                 resubscribe_at: None,
+                paused_since: 0,
+                renew_after_us: RENEW_FIRST_US,
+                fresh_subscription: false,
             }
             .run()
         });

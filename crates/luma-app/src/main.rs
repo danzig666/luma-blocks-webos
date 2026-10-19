@@ -634,7 +634,12 @@ fn flow_test() -> i32 {
     wait(&mut b, 1800);
     check(
         "a short motion gap keeps playing with a note",
-        b.screen == Screen::Game && b.motion_gap_us(platform::now_us()).is_some(),
+        b.screen == Screen::Game && b.motion_note_due(platform::now_us()),
+    );
+    press(&mut b, Button::Left);
+    check(
+        "no motion note while the buttons are in use",
+        b.screen == Screen::Game && !b.motion_note_due(platform::now_us()),
     );
     wait(&mut b, 4200);
     check(

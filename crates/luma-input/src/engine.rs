@@ -48,6 +48,8 @@ pub struct GestureEngine {
     armed: bool,
     /// First frame seen while disarmed (how long re-arming has been waiting).
     disarmed_us: Option<u64>,
+    /// The sensor stream is paused; recognizers were reset for it.
+    stale: bool,
     still_since: Option<u64>,
     guard_until: u64,
     freeze_until: u64,
@@ -67,6 +69,8 @@ pub struct GestureEngine {
 }
 
 const RECENT: usize = 12;
+/// Data resuming while the remote turns faster than this (deg/s) resumes mid-movement.
+const RESUME_MID_MOTION_DPS: f32 = 90.0;
 /// Re-arm after this long even without a calm moment, ms.
 const REARM_GIVE_UP_MS: f32 = 2500.0;
 
@@ -86,6 +90,7 @@ impl GestureEngine {
             drop: Drop::default(),
             armed: false,
             disarmed_us: None,
+            stale: false,
             still_since: None,
             guard_until: 0,
             freeze_until: 0,
@@ -229,8 +234,23 @@ impl GestureEngine {
         if let Some(q) = s.quat {
             self.last_quat = Some(q);
         }
+        if self.stale {
+            // Data is back. From rest (the remote just started moving out of button mode)
+            // gestures count at once; in the middle of a fast movement (a radio gap) that
+            // movement is stale and must not complete a gesture, so wait for calm.
+            let scale = if self.sensor.gyro_to_dps > 0.0 {
+                self.sensor.gyro_to_dps
+            } else {
+                crate::frame::RAD_TO_DEG
+            };
+            if s.gyro.is_some_and(|g| g.len() * scale > RESUME_MID_MOTION_DPS) {
+                self.armed = false;
+                self.still_since = None;
+            }
+        }
         if let Some(f) = self.sensor.motion(s, &self.calib, &self.cfg) {
             self.last_motion_us = Some(s.t_us);
+            self.stale = false;
             if self.active != Some(AimSource::Sensor) {
                 self.switch_source(AimSource::Sensor);
             }
@@ -275,11 +295,12 @@ impl GestureEngine {
                 }
             }
         } else if self.active == Some(AimSource::Sensor) && !self.sensor_fresh(now_us) {
-            // Stream stalled: drop in-flight candidates rather than act on stale motion.
-            if self.armed {
+            // Stream paused (the remote rests or is in button mode) or stalled: drop in-flight
+            // candidates rather than act on stale motion. Stay armed: when the remote moves
+            // again the data resumes with that very movement, and it must count.
+            if !self.stale {
                 self.reset_recognizers();
-                self.armed = false;
-                self.still_since = None;
+                self.stale = true;
             }
         }
     }

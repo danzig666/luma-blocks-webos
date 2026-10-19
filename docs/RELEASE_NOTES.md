@@ -1,13 +1,29 @@
-# Luma Blocks 0.2.6 (test build)
+# Luma Blocks 0.2.7 (test build)
 
 A minimalist falling-block puzzle for LG webOS TVs with Magic Remote motion controls.
 
 **Pre-release.** Built, ABI-audited and smoke-tested under ARM emulation; game and gesture logic
 covered by automated tests. On-TV feedback drove this release; motion behaviour on real remotes
 still needs confirming
-([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.6/docs/TV_CHECKLIST.md)).
+([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.7/docs/TV_CHECKLIST.md)).
 
-## What changed since 0.2.5
+## What changed since 0.2.6
+
+Feedback: using a button in motion mode immediately "broke" motion, with the reconnecting
+note flashing above the board.
+
+* **Buttons and motion mix again.** A button press puts the Magic Remote in button mode: it
+  stops reporting motion until it is moved. The app treated that as a broken connection,
+  renewed the subscription and made gestures wait for a calm moment. Now:
+  * the subscription is kept while the remote reports itself awake; data resumes on it the
+    moment the remote moves (it is renewed only after 4 s, 8 s, 16 s… without data, in case
+    it really died);
+  * gestures stay armed through the pause, so the very first movement counts (a movement
+    already under way when data returns still waits for calm);
+  * the note ("Motion paused: move the remote") waits 2.5 s after the last button press, so
+    it no longer flashes while you use the buttons.
+
+## Earlier: 0.2.6 (since 0.2.5)
 
 * **Sliding a dropped piece with a swing works.** 0.2.5 kept swings off for the whole
   drop recoil, which was longer than the slide time, so only buttons could still move a
@@ -147,13 +163,13 @@ pointer did not show.
 
 ## Downloads
 
-* `io.github.danzig666.lumablocks_0.2.6_arm.ipk`: **Luma Blocks**
-* `io.github.danzig666.lumablocks.debug_0.2.6_arm.ipk`: **Luma Blocks (Dev)**, a separate
+* `io.github.danzig666.lumablocks_0.2.7_arm.ipk`: **Luma Blocks**
+* `io.github.danzig666.lumablocks.debug_0.2.7_arm.ipk`: **Luma Blocks (Dev)**, a separate
   identity with separate saves
 * `SHA256SUMS.txt`, plus the Homebrew Channel manifest
 
 Install: Developer Mode (`ares-install`) or Homebrew Channel / Dev Manager. See
-[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.6/docs/INSTALL.md).
+[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.7/docs/INSTALL.md).
 
 **For testers:** please run Settings → Calibrate the remote first. If gestures still feel wrong,
 turn on Settings → More → Developer options, open **Input diagnostics**, record a trace with Red

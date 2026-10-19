@@ -49,6 +49,8 @@ pub enum Screen {
 const MOTION_LOST_PAUSE_US: u64 = 5_000_000;
 /// ...and no button was used for this long.
 const MOTION_LOST_IDLE_US: u64 = 3_000_000;
+/// The "motion paused" note waits this long after the last button press.
+const MOTION_NOTE_AFTER_BUTTONS_US: u64 = 2_500_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PauseReason {
@@ -1048,12 +1050,19 @@ impl App {
         }
     }
 
-    /// How long motion has been missing during play (for the reconnecting note).
+    /// How long motion has been missing during play.
     pub fn motion_gap_us(&self, now: u64) -> Option<u64> {
         self.session
             .as_ref()
             .and_then(|s| s.missing_since)
             .map(|t| now.saturating_sub(t))
+    }
+
+    /// Whether to show the "motion paused" note: motion is missing and the player is not
+    /// busy with the buttons (a button press itself pauses the remote's motion reports).
+    pub fn motion_note_due(&self, now: u64) -> bool {
+        self.motion_gap_us(now).is_some_and(|g| g > 400_000)
+            && now.saturating_sub(self.last_activity) > MOTION_NOTE_AFTER_BUTTONS_US
     }
 
     /// One line on the motion connection for ordinary screens, so a photo of the screen says

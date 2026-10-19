@@ -80,6 +80,12 @@ pure crates and runs on any desktop.
     re-anchors without a jump.
   * Only one discrete action is accepted per trajectory.
   * A button press cancels candidates and adds a short guard against press jiggle.
+  * A pause in the sensor data (the Magic Remote stops reporting after a button press until
+    it is moved) only resets the recognizers; gestures stay armed, so the movement that
+    resumes the data counts. If the data resumes in the middle of a fast movement (a radio
+    gap), that movement waits for calm instead. The worker keeps the subscription through
+    such pauses while the remote reports itself awake and renews it only after 4 s, then
+    8 s, 16 s… without data.
   * After `reset()` (pause, resume, focus change, remote wake or reconnection) nothing commits
     until the remote has been calm. "Calm" starts as stillness and relaxes over about two
     seconds; after 2.5 s gestures re-arm regardless, so a shaky hand never leaves them off.

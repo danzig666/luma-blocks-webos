@@ -300,3 +300,35 @@ fn a_swing_right_after_a_drop_slides_the_piece() {
         assert!(got.contains(&Gesture::MoveRight), "{rot:?}: {got:?}");
     }
 }
+
+/// Pressing a button puts the Magic Remote in button mode: it stops reporting motion until it
+/// is moved again. The first gesture after such a pause must work at once.
+#[test]
+fn the_first_gesture_after_a_pause_in_the_data_counts() {
+    let p = Profile {
+        rotation: RotationStyle::Twist,
+        horizontal: HorizontalStyle::Swing,
+        ..Profile::default()
+    };
+    let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+    let mut s = Synth::new(60.0, 92);
+    feed(&mut e, &s.hold(600.0));
+    for (k, g) in [
+        (0, Gesture::RotateCw),
+        (1, Gesture::MoveRight),
+        (2, Gesture::HardDrop),
+    ] {
+        // Three seconds without any data (buttons in use), the app keeps ticking.
+        let _ = s.hold(3000.0);
+        for t in (0..60).map(|i| s.t_us - 3_000_000 + i * 50_000) {
+            e.tick(t);
+        }
+        let v = match k {
+            0 => gestures::twist(&mut s, 1.0, 45.0, 200.0),
+            1 => gestures::swing(&mut s, 1.0, 6.0, 140.0, 1.0),
+            _ => gestures::drop(&mut s, 18.0, 150.0),
+        };
+        let got = feed(&mut e, &v);
+        assert_eq!(got.first(), Some(&g), "after a pause: {got:?}");
+    }
+}

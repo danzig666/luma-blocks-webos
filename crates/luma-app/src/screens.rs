@@ -812,8 +812,8 @@ impl App {
         match self.screen {
             Screen::Game => {
                 // A short, non-blocking note: motion gap, or motion coming back.
-                let note = match (self.motion_gap_us(now), self.notice) {
-                    (Some(gap), _) if gap > 400_000 => Some((S::MOTION_GAP, theme::WARN, 1.0)),
+                let note = match (self.motion_note_due(now), self.notice) {
+                    (true, _) => Some((S::MOTION_GAP, theme::WARN, 1.0)),
                     (_, Some((text, t0))) if now.saturating_sub(t0) < 2_500_000 => {
                         let a = 1.0 - now.saturating_sub(t0) as f32 / 2.5e6;
                         Some((text, theme::OK, a.min(1.0)))
