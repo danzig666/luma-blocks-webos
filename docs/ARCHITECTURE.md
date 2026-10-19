@@ -34,8 +34,11 @@ pure crates and runs on any desktop.
 * **Frames**: motion comes from the **gyroscope** whenever it is delivered (a direct
   body-frame rate with documented axes); its units are cross-checked against the orientation at
   runtime (rad/s per LG, deg/s detected automatically). The yaw and pitch rates are turned by
-  the remote's roll about its length, measured from gravity (accelerometer, smoothed, only
-  while it reads about 1 g), so a remote held rolled still moves in room directions. The orientation's yaw and pitch are
+  the remote's roll about its length, so a remote held rolled still moves in room directions.
+  The roll is learned first from LG's own pointer (`coordinate`), which the firmware already
+  keeps in room directions: a decaying complex fit of pointer steps against our gyro steps
+  (steps at the screen edges skipped) gives the rotation. Until that fit is confident, gravity
+  from the accelerometer (smoothed, only while it reads about 1 g) stands in. The orientation's yaw and pitch are
   compared with the gyro's while the remote moves; if the firmware reports the rotation vector
   in the opposite convention (which mirrors pointing), the absolute aim is flipped to match. Short-term aim is integrated from the gyro
   with a slow leak. For the Pointing style, absolute aim comes from the orientation relative to
@@ -73,7 +76,8 @@ pure crates and runs on any desktop.
     duration. After a commit it stays latched across piece spawns until a minimum time has
     passed *and* the remote has stopped moving down (resting, recoiling or moving sideways).
 * **Arbitration** (`engine.rs`):
-  * A twist candidate blocks drops; a circle candidate does not (a drop needs a nearly
+  * A twist candidate blocks drops only while the wrist is actually turning; a twist that
+    stops halfway is adopted as a new posture (change of grip). A circle candidate does not (a drop needs a nearly
     straight, fast downward stroke, which a circle's side is not, and a small sideways wind-up
     before a flick often looks like the start of a circle). A circle candidate does not block a held swing
     stroke (a curved swing looks like the start of a circle); a stroke that moved the piece

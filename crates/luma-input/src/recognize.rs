@@ -157,6 +157,11 @@ impl Twist {
                 }
                 if sign(d) != self.dir || d.abs() < c.twist_enter_deg * 0.25 {
                     self.phase = Phase::Idle;
+                } else if still_ms > 250.0 && d.abs() < c.twist_enter_deg {
+                    // A twist that stopped halfway is a change of grip, not a gesture: adopt
+                    // the new posture instead of waiting in a candidate that blocks drops.
+                    self.baseline = a;
+                    self.phase = Phase::Idle;
                 } else if d.abs() >= c.twist_enter_deg {
                     if has_rate && self.peak_rate < c.twist_min_peak_dps {
                         // A slow roll is posture drift, not a gesture: adopt it silently.

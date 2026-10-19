@@ -38,8 +38,11 @@
 
 * Rotation and sideways styles combine freely.
 * Directions follow the room, not the remote: held rolled (turned about its length), a flick
-  down still drops and a swing still moves left or right. The remote's roll comes from
-  gravity (Input diagnostics shows it as "roll").
+  down still drops and a swing still moves left or right. The app learns the roll from how
+  LG's own pointer moves (it already follows the room) whenever the remote moves a little, and
+  from gravity until then. Input diagnostics shows both ("roll: gravity …, pointer …").
+* A twist that stops halfway (a change of grip) is taken as the new resting posture, not as
+  a gesture in progress.
 * While you play with motion, a small live remote under the stats (MOTION) follows your
   movement and turns with your wrist. An arc fills as a rotation gesture builds up, and every
   recognized gesture flashes green (an arrow for a rotation, dots sliding left, right or down

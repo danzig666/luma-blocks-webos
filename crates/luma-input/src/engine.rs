@@ -222,6 +222,11 @@ impl GestureEngine {
         self.sensor.roll_rad.map(f32::to_degrees)
     }
 
+    /// The roll compensation learned from LG's pointer (screen plane), degrees.
+    pub fn pointer_roll_deg(&self) -> Option<f32> {
+        self.sensor.cursor_roll_rad.map(f32::to_degrees)
+    }
+
     pub fn motion(&mut self, s: &MotionSample) {
         if let Some(p) = self.probe.as_mut() {
             let dt = self
@@ -371,7 +376,10 @@ impl GestureEngine {
             // A twist in progress blocks a drop. A circle candidate does not: the drop needs a
             // nearly straight, fast downward stroke, which a circle's side is not, while a
             // small sideways wind-up before a flick often looks like the start of a circle.
-            let twisting = self.twist.phase == Phase::Candidate;
+            // ...and only while it is actually turning (a candidate that stopped is about to
+            // be dropped as a change of grip).
+            let twisting = self.twist.phase == Phase::Candidate
+                && f.twist_rate_dps.is_some_and(|r| r.abs() > c.still_twist_dps);
             let blocked = twisting || recently_rotated || !commits.is_empty();
             if let Some(cm) = self.drop.update(&f, &c, blocked) {
                 commits.push(cm);

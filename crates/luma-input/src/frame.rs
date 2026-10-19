@@ -67,7 +67,20 @@ pub struct AimTracker {
     /// most sensors), -1 if the firmware reports the opposite sign; learned from the first
     /// clear readings (players start with the remote held normally).
     accel_up_sign: Option<f32>,
+    /// Rotation (radians, screen plane) that turns our gyro motion into the way LG's own
+    /// pointer moves, learned from the pointer's movement. The firmware's pointer already
+    /// follows the room however the remote is held, so this is the most direct reference.
+    pub cursor_roll_rad: Option<f32>,
+    cursor_prev: Option<(f32, f32)>,
+    /// Running sum of pointer step x conj(gyro step) (complex, decaying) and of the step
+    /// magnitudes, for the fit above.
+    cursor_fit: (f32, f32, f32),
+    cursor_fit_us: u64,
 }
+
+/// LG reports its pointer in 1920 x 1080 pixels; steps at the edges are clamped.
+const CURSOR_W: f32 = 1920.0;
+const CURSOR_H: f32 = 1080.0;
 
 /// Degrees of gyro-measured motion needed before deciding an orientation sign.
 const ORIENT_CHECK_DEG: f32 = 25.0;
@@ -100,7 +113,12 @@ impl AimTracker {
     pub fn reset(&mut self) {
         // The unit check survives resets: it describes the hardware, not the gesture.
         // So do the orientation signs.
-        let (g, checked, accel_sign) = (self.gyro_to_dps, self.gyro_units_checked, self.accel_up_sign);
+        let (g, checked, accel_sign, cursor_roll) = (
+            self.gyro_to_dps,
+            self.gyro_units_checked,
+            self.accel_up_sign,
+            self.cursor_roll_rad,
+        );
         let (ys, ps, ya, pa) = (
             self.orient_yaw_sign,
             self.orient_pitch_sign,
@@ -111,6 +129,7 @@ impl AimTracker {
         self.gyro_to_dps = g;
         self.gyro_units_checked = checked;
         self.accel_up_sign = accel_sign;
+        self.cursor_roll_rad = cursor_roll;
         self.orient_yaw_sign = ys;
         self.orient_pitch_sign = ps;
         self.yaw_agree = ya;
@@ -121,15 +140,62 @@ impl AimTracker {
     /// remote's roll, so a remote held rolled still moves left/right and up/down the way the
     /// player sees it.
     fn room_rates(&self, g: Vec3, up: Vec3, right: Vec3, calib: &Calibration) -> (f32, f32) {
-        let (raw_yaw, raw_pitch) = (-g.dot(up), g.dot(right));
-        let (raw_yaw, raw_pitch) = match self.roll_rad {
-            Some(r) => {
-                let (sn, cs) = r.sin_cos();
-                (cs * raw_yaw - sn * raw_pitch, sn * raw_yaw + cs * raw_pitch)
-            }
-            None => (raw_yaw, raw_pitch),
-        };
-        (raw_yaw * calib.yaw_sign, raw_pitch * calib.pitch_sign)
+        // Screen-plane rates (x right, y down) as calibrated for the neutral hold...
+        let (bx, by) = (-g.dot(up) * calib.yaw_sign, -g.dot(right) * calib.pitch_sign);
+        // ...turned by how the remote is rolled.
+        let (sn, cs) = self.screen_roll(calib).sin_cos();
+        let (x, y) = (cs * bx - sn * by, sn * bx + cs * by);
+        (x, -y)
+    }
+
+    /// The rotation in the screen plane that compensates the remote's roll: learned from
+    /// LG's pointer when it has moved recently, else from gravity, else none.
+    fn screen_roll(&self, calib: &Calibration) -> f32 {
+        if let Some(t) = self.cursor_roll_rad {
+            return t;
+        }
+        match self.roll_rad {
+            // Gravity gives the roll in the body frame; in the screen plane it turns the
+            // other way, and a calibrated mirror flips it again.
+            Some(r) => -r * calib.yaw_sign * calib.pitch_sign,
+            None => 0.0,
+        }
+    }
+
+    /// Fit the rotation between our (calibrated, unrotated) gyro motion and LG's pointer
+    /// motion. Steps where the pointer sits at a screen edge are skipped.
+    fn learn_cursor(&mut self, t_us: u64, b: (f32, f32), dt: f32, cursor: Option<(f32, f32)>) {
+        let Some((x, y)) = cursor else { return };
+        let prev = self.cursor_prev.replace((x, y));
+        let Some((px, py)) = prev else { return };
+        if dt <= 0.0 {
+            return;
+        }
+        let edge = |v: f32, max: f32| v <= 1.0 || v >= max - 2.0;
+        if edge(x, CURSOR_W) || edge(y, CURSOR_H) || edge(px, CURSOR_W) || edge(py, CURSOR_H) {
+            return;
+        }
+        let (cx, cy) = (x - px, y - py);
+        let (bx, by) = (b.0 * dt, b.1 * dt);
+        let (cl, bl) = ((cx * cx + cy * cy).sqrt(), (bx * bx + by * by).sqrt());
+        if cl < 1.0 || bl < 0.05 {
+            return;
+        }
+        // Forget old evidence over about a second of movement.
+        let decay = (-dt / 1.0).exp();
+        let (re, im, mag) = self.cursor_fit;
+        let (re, im, mag) = (
+            re * decay + cx * bx + cy * by,
+            im * decay + cy * bx - cx * by,
+            mag * decay + cl * bl,
+        );
+        self.cursor_fit = (re, im, mag);
+        self.cursor_fit_us = t_us;
+        // Enough movement and a consistent relation: adopt it.
+        let coherence = (re * re + im * im).sqrt() / mag.max(1e-6);
+        if mag > 40.0 && coherence > 0.8 {
+            self.cursor_roll_rad = Some(im.atan2(re));
+        }
     }
 
     /// Learn whether the orientation turns the same way as the gyro, from steps of both.
@@ -275,6 +341,11 @@ impl AimTracker {
             )
         });
         let cursor = s.cursor.map(|(x, y)| Vec2::new(x / 1080.0, y / 1080.0));
+        if let Some(g) = s.gyro {
+            let g = g.scale(self.scale());
+            let b = (-g.dot(up) * calib.yaw_sign, -g.dot(right) * calib.pitch_sign);
+            self.learn_cursor(s.t_us, b, dt_int, s.cursor);
+        }
         let use_gyro = s.gyro.is_some() && (cfg.prefer_gyro || orient.is_none());
         let (aim, twist, twist_rate_g) = if use_gyro {
             let g = s.gyro.unwrap().scale(self.scale());

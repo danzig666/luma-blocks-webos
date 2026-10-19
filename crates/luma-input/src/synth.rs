@@ -35,6 +35,9 @@ pub struct Synth {
     prev: Option<Quat>,
     /// Current base pose (yaw, pitch, twist), degrees.
     pub base: (f32, f32, f32),
+    /// Also emit LG's pointer position (pixels per degree), following yaw and pitch in room
+    /// directions like the firmware's pointer, clamped to a 1920 x 1080 screen.
+    pub cursor_px_per_deg: Option<f32>,
 }
 
 impl Synth {
@@ -47,6 +50,7 @@ impl Synth {
             i: 0,
             prev: None,
             base: (0.0, 0.0, 0.0),
+            cursor_px_per_deg: None,
         }
     }
 
@@ -95,7 +99,12 @@ impl Synth {
             gyro: Some(gyro.unwrap_or_default()),
             accel: Some(q.conj().rotate(Vec3::new(0.0, 0.0, 9.81))),
             linear_accel: None,
-            cursor: None,
+            cursor: self.cursor_px_per_deg.map(|k| {
+                (
+                    (960.0 + ty * k).clamp(0.0, 1919.0),
+                    (540.0 - tp * k).clamp(0.0, 1079.0),
+                )
+            }),
             interval_ms: Some(dt * 1000.0),
         }
     }

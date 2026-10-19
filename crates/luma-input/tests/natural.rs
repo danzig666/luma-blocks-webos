@@ -416,3 +416,70 @@ fn a_rolled_remote_works_with_an_inverted_accelerometer() {
     let got = feed(&mut e, &flip(gestures::drop(&mut s, 18.0, 150.0)));
     assert_eq!(got, vec![Gesture::HardDrop], "{got:?}");
 }
+
+/// When the accelerometer gives nothing usable, LG's own pointer (which already follows the
+/// room) teaches how the remote is rolled.
+#[test]
+fn a_rolled_remote_learns_its_roll_from_the_pointer() {
+    for roll in [-75.0f32, -40.0, 40.0, 75.0] {
+        let p = Profile::default();
+        let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+        let mut s = Synth::new(60.0, 96);
+        s.cursor_px_per_deg = Some(40.0);
+        s.base = (0.0, 0.0, roll);
+        let no_accel = |v: Vec<luma_input::sample::MotionSample>| -> Vec<luma_input::sample::MotionSample> {
+            v.into_iter()
+                .map(|mut m| {
+                    m.accel = None;
+                    m
+                })
+                .collect()
+        };
+        feed(&mut e, &no_accel(s.hold(800.0)));
+        // A little ordinary aiming around (slow, no gestures) lets it learn.
+        feed(
+            &mut e,
+            &no_accel(s.motion(1500.0, |q| {
+                (4.0 * (q * 7.0).sin(), 3.0 * (q * 5.0).cos() - 3.0, 0.0)
+            })),
+        );
+        feed(&mut e, &no_accel(s.hold(2500.0)));
+        let got = feed(&mut e, &no_accel(gestures::drop(&mut s, 18.0, 150.0)));
+        assert_eq!(got, vec![Gesture::HardDrop], "roll {roll}: drop gave {got:?}");
+        let got = feed(&mut e, &no_accel(gestures::swing(&mut s, 1.0, 6.0, 140.0, 1.0)));
+        assert!(
+            !got.is_empty() && got.iter().all(|g| *g == Gesture::MoveRight),
+            "roll {roll}: swing right gave {got:?}"
+        );
+    }
+}
+
+/// Rolling the remote during play (a change of grip) and then holding it rolled while
+/// playing on: flicks down must drop, swings must move, nothing must rotate by itself.
+#[test]
+fn rolling_the_remote_during_play_keeps_drops_working() {
+    for (roll, ms) in [(60.0f32, 1600.0), (-70.0, 2000.0), (85.0, 2600.0)] {
+        let p = Profile::default(); // twist rotation
+        let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+        let mut s = Synth::new(60.0, 97);
+        s.cursor_px_per_deg = Some(40.0);
+        feed(&mut e, &s.hold(800.0));
+        // Slow change of grip, not a twist gesture.
+        let mut other = feed(&mut e, &s.motion(ms, |q| (0.0, 0.0, roll * ease(q))));
+        let mut drops = 0;
+        for i in 0..6 {
+            let w = if i % 2 == 0 { 2.0 } else { -2.0 };
+            other.extend(feed(
+                &mut e,
+                &s.motion(1500.0, |q| (w * q, 0.8 * (q * 5.0).sin(), 0.0)),
+            ));
+            let got = feed(&mut e, &gestures::drop(&mut s, 18.0, 150.0));
+            drops += got.iter().filter(|g| **g == Gesture::HardDrop).count();
+            other.extend(got.into_iter().filter(|g| *g != Gesture::HardDrop));
+        }
+        assert!(
+            drops == 6 && other.is_empty(),
+            "roll {roll} over {ms} ms: {drops}/6 drops, other {other:?}"
+        );
+    }
+}

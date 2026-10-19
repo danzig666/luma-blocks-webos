@@ -252,13 +252,17 @@ impl App {
             _ => "learning",
         };
         lines.push(format!(
-            "orientation vs gyro: yaw {}  ·  pitch {}  ·  roll {}",
+            "orientation vs gyro: yaw {}  ·  pitch {}  ·  roll: gravity {}, pointer {}",
             sign(oy),
             sign(op),
             self.engine
                 .roll_deg()
                 .map(|r| format!("{r:+.0}°"))
-                .unwrap_or_else(|| "?".into())
+                .unwrap_or_else(|| "?".into()),
+            self.engine
+                .pointer_roll_deg()
+                .map(|r| format!("{r:+.0}° (used)"))
+                .unwrap_or_else(|| "learning".into())
         ));
         for l in lines {
             g.text(&l, x2, y, small, Face::Regular, theme::TEXT_DIM);
