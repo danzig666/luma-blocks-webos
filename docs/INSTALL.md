@@ -51,6 +51,7 @@ FLAVOR=debug              # or release
 | `scripts/tv.sh logs` | print the current and previous log |
 | `scripts/tv.sh traces <dir>` | copy recorded gesture traces |
 | `scripts/tv.sh selftest` | run `--self-test` on the TV (shell context, see the note in the script) |
+| `scripts/tv.sh motionprobe` | connect to the remote's motion sensor for 10 s and print each step and the measured rate |
 | `scripts/tv.sh remove` | uninstall |
 
 Logs and traces live in

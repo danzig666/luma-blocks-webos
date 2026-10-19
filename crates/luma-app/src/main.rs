@@ -9,6 +9,8 @@
 //!   luma-blocks --replay F           run the app with motion played back from a trace
 //!   luma-blocks --shots DIR          render documentation screenshots (desktop)
 //!   luma-blocks --flow-test          drive the app state machine headless (desktop CI)
+//!   luma-blocks --motion-probe [S]   connect to the remote's motion sensor for S seconds
+//!                                    (default 10) and print what happens (TV, over SSH)
 
 mod app;
 mod audio;
@@ -44,6 +46,12 @@ fn main() {
     }
     if let Some(f) = arg_value("--analyze-trace") {
         std::process::exit(analyze_trace(&f));
+    }
+    if std::env::args().any(|a| a == "--motion-probe") {
+        let secs = arg_value("--motion-probe")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10.0);
+        std::process::exit(motion_probe(secs));
     }
     if let Err(e) = run() {
         log::error!("fatal: {e}");
@@ -125,6 +133,22 @@ fn run() -> Result<(), String> {
         motion::MotionHub::remote(app_id.clone(), 100.0)
     } else {
         motion::MotionHub::simulated()
+    };
+    // Kept alive for the whole run; see `platform::make_cursor`.
+    let _cursor = if platform::is_webos() || std::env::var("LUMA_OWN_CURSOR").is_ok() {
+        match platform::make_cursor(h) {
+            Ok(c) => {
+                c.set();
+                log::info!("pointer: app-provided arrow");
+                Some(c)
+            }
+            Err(e) => {
+                log::warn!("pointer: keeping the system arrow ({e})");
+                None
+            }
+        }
+    } else {
+        None
     };
     let mut app = app::App::new(sdl.clone(), store, motion, log_path, sdl_desc);
     if let Some(dir) = shots {
@@ -608,6 +632,58 @@ fn flow_test() -> i32 {
         println!("flow test passed");
         0
     } else {
+        1
+    }
+}
+
+/// Connect to the motion sensor without the game, printing the connection log and the
+/// measured rate once a second. Exit code 0 when samples arrived at 50/s or more.
+fn motion_probe(secs: f64) -> i32 {
+    let mut hub = motion::MotionHub::remote(platform::app_id(), 100.0);
+    hub.start();
+    let t0 = platform::now_us();
+    let (mut shown, mut total, mut last_print) = (0u64, 0usize, t0);
+    let mut best_hz = 0.0f32;
+    let mut first: Option<luma_input::sample::MotionSample> = None;
+    loop {
+        let now = platform::now_us();
+        let (v, _) = hub.drain(now);
+        total += v.len();
+        if first.is_none() {
+            first = v.first().copied();
+            if let Some(s) = first {
+                println!("first sample: {s:?}");
+            }
+        }
+        let st = hub.status();
+        let new = (st.notes - shown).min(st.log.len() as u64) as usize;
+        for l in st.log.iter().skip(st.log.len() - new) {
+            println!("{l}");
+        }
+        shown = st.notes;
+        if now - last_print >= 1_000_000 {
+            last_print = now;
+            let hz = hub.rate.hz(now);
+            best_hz = best_hz.max(hz);
+            println!(
+                "  [{:>4.1}s] state: {} · samples {total} · {hz:.0}/s",
+                (now - t0) as f64 / 1e6,
+                st.state.label()
+            );
+        }
+        if (now - t0) as f64 / 1e6 >= secs {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    println!("last payload: {}", hub.status().last_payload);
+    hub.stop();
+    std::thread::sleep(Duration::from_millis(200));
+    if best_hz >= 50.0 {
+        println!("PASS motion stream reached {best_hz:.0}/s");
+        0
+    } else {
+        println!("FAIL motion stream best {best_hz:.0}/s");
         1
     }
 }

@@ -1007,6 +1007,25 @@ impl App {
         }
     }
 
+    /// One line on the motion connection for ordinary screens, so a photo of the screen says
+    /// what failed (the full log is in Input diagnostics).
+    pub fn motion_detail(&self) -> Option<String> {
+        if !self.motion.is_real() {
+            return None;
+        }
+        let st = self.motion.status();
+        let mut d = format!("Motion: {}", st.state.label());
+        if let Some(r) = &st.registration {
+            d += &format!(" · via {r}");
+        }
+        if let Some(e) = &st.last_error {
+            d += &format!(" · {e:?}");
+        } else if let Some(l) = st.log.back() {
+            d += &format!(" · {}", l.trim());
+        }
+        Some(d.chars().take(260).collect())
+    }
+
     /// When the system pointer is silent but the sensor reports its cursor position, draw
     /// our own cursor there and let it hover menus.
     fn update_own_cursor(&mut self, now: u64) {

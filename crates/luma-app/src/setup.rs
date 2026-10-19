@@ -518,7 +518,12 @@ impl App {
         g.paragraph(body, 160 + slide, 360, 640, 34.0, alpha(theme::TEXT_DIM, enter));
         if let Some(m) = c.msg {
             let pulse = 0.75 + 0.25 * (now as f32 / 1e6 * 4.0).sin();
-            g.paragraph(m, 160, 620, 640, 28.0, alpha(theme::WARN, pulse));
+            let hgt = g.paragraph(m, 160, 620, 640, 28.0, alpha(theme::WARN, pulse));
+            if m == S::CAL_NO_SENSOR {
+                if let Some(d) = self.motion_detail() {
+                    g.paragraph(&d, 160, 640 + hgt, 640, 22.0, theme::TEXT_FAINT);
+                }
+            }
         }
         let keys = if matches!(step, CalStep::Left | CalStep::Right) {
             S::CAL_KEYS_EDGE

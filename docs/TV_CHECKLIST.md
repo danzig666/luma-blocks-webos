@@ -27,6 +27,10 @@ app as launched normally.
 
 ## 3. Motion stream (middle column)
 
+- [ ] If the app says the sensor is not answering: photograph the grey "Motion: …" line under
+      the message, and run `scripts/tv.sh motionprobe` (prints each connection attempt, the
+      replies and the measured rate).
+
 - [ ] **State**: streaming? Note the **registration** shape that worked, and every failed shape
       from the Developer screen's backend log.
 - [ ] **Backend**: sensor2 or legacy; API version.

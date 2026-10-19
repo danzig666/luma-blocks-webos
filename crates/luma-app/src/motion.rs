@@ -83,6 +83,8 @@ pub struct Status {
     /// Incremented whenever the stream (re)starts: remote wake, reconnection, resubscribe.
     pub generation: u64,
     pub malformed: u64,
+    /// Notes written so far (the log keeps only the latest).
+    pub notes: u64,
 }
 
 impl Default for Status {
@@ -99,6 +101,7 @@ impl Default for Status {
             last_payload: String::new(),
             generation: 0,
             malformed: 0,
+            notes: 0,
         }
     }
 }
@@ -110,6 +113,7 @@ impl Status {
             self.log.pop_front();
         }
         self.log.push_back(format!("{:>8.2}s {s}", now_us() as f64 / 1e6));
+        self.notes += 1;
     }
 }
 
@@ -181,7 +185,19 @@ struct Worker {
     next_action_us: u64,
     probe_sent_us: u64,
     retried_duplicate: bool,
+    /// Index into [`SENSOR2_TYPE_CHOICES`].
+    types_idx: usize,
+    /// Interval (ms) we want from sensor2, once known.
+    want_ms: u32,
+    /// Data arrivals in the current one-second window, to notice a too-slow stream.
+    rate_window: (u64, u32),
+    interval_fixes: u32,
+    /// A resubscription waiting for the service to confirm the cancel (deadline).
+    resubscribe_at: Option<u64>,
 }
+
+/// `sensorType` requests, tried in order when the service rejects a value as invalid.
+const SENSOR2_TYPE_CHOICES: [&str; 2] = [mrcu::SENSOR2_TYPES, "all"];
 
 impl Worker {
     fn set_state(&self, s: State) {
@@ -200,11 +216,18 @@ impl Worker {
     fn call(&mut self, uri_method: &str, payload: &str, kind: Call) -> Option<u64> {
         let bus = self.bus.as_mut()?;
         let uri = format!("{}/{}", mrcu::SERVICE, uri_method);
-        match bus.call(&uri, payload) {
+        let subscribe = matches!(kind, Call::Subscribe | Call::LegacySubscribe);
+        match bus.call(&uri, payload, subscribe) {
             Ok((id, token)) => {
                 self.calls.push((id, kind));
                 if self.calls.len() > 64 {
-                    self.calls.remove(0);
+                    // Forget the oldest one-shot call; live subscriptions must keep routing.
+                    let i = self
+                        .calls
+                        .iter()
+                        .position(|(_, k)| !matches!(k, Call::Subscribe | Call::LegacySubscribe))
+                        .unwrap_or(0);
+                    self.calls.remove(i);
                 }
                 Some(token)
             }
@@ -238,23 +261,54 @@ impl Worker {
     fn start(&mut self) {
         self.want_running = true;
         if self.bus.is_none() {
+            self.shape_idx = 0;
             self.set_state(State::Registering);
             if !self.register_next() {
-                self.set_state(State::Failed("no registration accepted".into()));
+                self.next_action_us = now_us() + 8_000_000;
+                self.set_state(State::Failed("no way to reach the bus".into()));
                 return;
             }
         }
         self.probe();
     }
 
+    /// `sensor2/getSensorState` is LG's documented availability check. A reply of any kind
+    /// proves this connection reaches the motion service.
     fn probe(&mut self) {
         self.set_state(State::Probing);
         self.probe_sent_us = now_us();
-        self.call("getAPIVersion", "{}", Call::Probe);
+        if self.call("sensor2/getSensorState", "{}", Call::Probe).is_none() {
+            self.next_connection("the call was refused");
+        }
+    }
+
+    /// The current connection cannot reach the service: try the next one, if any.
+    fn next_connection(&mut self, why: &str) {
+        let label = self.bus.as_ref().map(|b| b.shape.label()).unwrap_or("?");
+        self.shared
+            .status(|s| s.note(format!("{label}: {why}; trying the next connection")));
+        if self.register_next() {
+            self.probe();
+        } else {
+            self.next_action_us = now_us() + 8_000_000;
+            self.set_state(State::Failed(format!("motion service unreachable ({why})")));
+        }
+    }
+
+    fn set_interval(&mut self) {
+        let want = self.want_ms;
+        self.shared.status(|s| s.requested_ms = Some(want));
+        self.call(
+            "sensor2/setSensorInterval",
+            &format!("{{\"interval\":{want}}}"),
+            Call::SetInterval,
+        );
     }
 
     fn subscribe(&mut self) {
-        self.retried_duplicate = false;
+        // Late replies to an earlier subscription are ignored from now on.
+        self.calls
+            .retain(|(_, k)| !matches!(k, Call::Subscribe | Call::LegacySubscribe));
         self.set_state(State::Subscribing);
         if self.legacy {
             let code = mrcu::legacy_interval_code(self.target_hz);
@@ -266,7 +320,7 @@ impl Worker {
         } else {
             let p = format!(
                 "{{\"subscribe\":true,\"sensorType\":\"{}\"}}",
-                mrcu::SENSOR2_TYPES
+                SENSOR2_TYPE_CHOICES[self.types_idx.min(SENSOR2_TYPE_CHOICES.len() - 1)]
             );
             self.sub_token = self
                 .call("sensor2/getSensorEventData", &p, Call::Subscribe)
@@ -276,13 +330,34 @@ impl Worker {
         self.last_data_us = now_us();
     }
 
-    fn unsubscribe(&mut self) {
+    /// Forget our end of the subscription call (no request to the service).
+    fn drop_subscription(&mut self) {
         if let Some(b) = self.bus.as_mut() {
             b.cancel(self.sub_token);
         }
         self.sub_token = 0;
-        if !self.legacy && self.bus.is_some() {
-            self.call("sensor2/cancelSensorDataSubscribe", "{}", Call::Cancel);
+        self.resubscribe_at = None;
+    }
+
+    /// Returns whether a cancel request went to the service.
+    fn unsubscribe(&mut self) -> bool {
+        self.drop_subscription();
+        !self.legacy
+            && self.bus.is_some()
+            && self
+                .call("sensor2/cancelSensorDataSubscribe", "{}", Call::Cancel)
+                .is_some()
+    }
+
+    /// Cancel, then subscribe once the service confirms the cancel (or after 600 ms), so a
+    /// late cancel can never end the new subscription.
+    fn resubscribe(&mut self) {
+        if self.unsubscribe() {
+            self.set_state(State::Subscribing);
+            self.last_data_us = now_us();
+            self.resubscribe_at = Some(now_us() + 600_000);
+        } else {
+            self.subscribe();
         }
     }
 
@@ -299,48 +374,44 @@ impl Worker {
             s.last_payload = payload.chars().take(300).collect();
         });
         match call {
-            Call::Probe => match parse_simple(payload) {
-                Ok(v) => {
-                    let ver = v
-                        .get("version")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("?")
-                        .to_owned();
-                    self.shared.status(|s| s.api_version = Some(ver));
+            Call::Probe => match mrcu::parse_state(payload) {
+                Ok(alive) => {
+                    self.shared.status(|s| {
+                        s.note(format!(
+                            "motion service answered (remote {})",
+                            if alive { "awake" } else { "asleep" }
+                        ))
+                    });
                     self.legacy = false;
                     self.call("sensor2/getSensorInterval", "{}", Call::GetInterval);
                 }
                 Err(MrcuError::PermissionDenied(t)) => {
                     self.shared
                         .status(|s| s.last_error = Some(MrcuError::PermissionDenied(t.clone())));
-                    if self.register_next() {
-                        self.probe();
+                    if self.shape_idx < Shape::ORDER.len() {
+                        self.next_connection("permission denied");
                     } else {
                         self.set_state(State::Denied(t));
                     }
                 }
-                Err(e) => {
+                Err(MrcuError::Unsupported(t)) => {
                     // No sensor2 family: try the legacy API (it answers for itself).
                     self.shared
-                        .status(|s| s.note(format!("getAPIVersion: {e:?}; trying legacy API")));
+                        .status(|s| s.note(format!("sensor2 unsupported ({t}); trying legacy API")));
                     self.legacy = true;
                     self.subscribe();
+                }
+                Err(e) => {
+                    // It answered, so sensor2 exists; carry on and let the subscription tell.
+                    self.shared.status(|s| s.note(format!("getSensorState: {e:?}")));
+                    self.legacy = false;
+                    self.call("sensor2/getSensorInterval", "{}", Call::GetInterval);
                 }
             },
             Call::GetInterval => match mrcu::parse_interval(payload) {
                 Ok((cur, min, max)) => {
-                    let want = mrcu::choose_interval(min, max, self.target_hz);
-                    self.shared.status(|s| {
-                        s.interval = Some((cur, min, max));
-                        s.requested_ms = Some(want);
-                    });
-                    if want != cur {
-                        self.call(
-                            "sensor2/setSensorInterval",
-                            &format!("{{\"interval\":{want}}}"),
-                            Call::SetInterval,
-                        );
-                    }
+                    self.want_ms = mrcu::choose_interval(min, max, self.target_hz);
+                    self.shared.status(|s| s.interval = Some((cur, min, max)));
                     self.subscribe();
                 }
                 Err(e) => {
@@ -359,8 +430,7 @@ impl Worker {
                 Ok(true) => {
                     if self.want_running && !matches!(self.state(), State::Streaming | State::Subscribed) {
                         self.shared.status(|s| s.note("remote awake".into()));
-                        self.unsubscribe();
-                        self.subscribe();
+                        self.resubscribe();
                     }
                 }
                 Ok(false) => self.set_state(State::Sleeping),
@@ -378,6 +448,9 @@ impl Worker {
                 if let Err(e) = parse_simple(payload) {
                     self.shared.status(|s| s.note(format!("{call:?}: {e:?}")));
                 }
+                if call == Call::Cancel && self.resubscribe_at.take().is_some() && self.want_running {
+                    self.subscribe();
+                }
             }
         }
     }
@@ -390,27 +463,37 @@ impl Worker {
             Reply::Data(s) => {
                 let restarted = !matches!(self.state(), State::Streaming);
                 self.last_data_us = s.t_us;
+                if !legacy {
+                    self.check_rate(s.t_us);
+                }
                 if restarted {
                     self.shared.status(|st| st.generation += 1);
                     self.set_state(State::Streaming);
                 }
                 self.shared.push(s);
             }
-            Reply::Subscribed => self.set_state(State::Subscribed),
+            Reply::Subscribed => {
+                self.retried_duplicate = false;
+                self.set_state(State::Subscribed);
+                // LG's sample sets the interval once subscribed; the default is 1000 ms.
+                if !legacy {
+                    self.set_interval();
+                }
+            }
             Reply::Ok => {}
             Reply::Error(e) => {
                 self.shared.status(|s| s.last_error = Some(e.clone()));
                 match e {
                     MrcuError::Sleeping => {
-                        self.unsubscribe();
+                        self.drop_subscription();
                         self.set_state(State::Sleeping);
                         self.next_action_us = now_us() + 1_000_000;
                     }
                     MrcuError::AlreadySubscribed if !self.retried_duplicate => {
                         self.retried_duplicate = true;
-                        self.call("sensor2/cancelSensorDataSubscribe", "{}", Call::Cancel);
-                        self.next_action_us = now_us() + 300_000;
-                        self.set_state(State::Failed("already subscribed; retrying".into()));
+                        self.shared
+                            .status(|s| s.note("already subscribed; cancelling and retrying".into()));
+                        self.resubscribe();
                     }
                     MrcuError::Unsupported(t) if !legacy => {
                         self.shared
@@ -419,9 +502,20 @@ impl Worker {
                         self.subscribe();
                     }
                     MrcuError::Unsupported(t) => self.set_state(State::Unsupported(t)),
+                    MrcuError::InvalidParameter(t)
+                        if !legacy && self.types_idx + 1 < SENSOR2_TYPE_CHOICES.len() =>
+                    {
+                        self.types_idx += 1;
+                        let next = SENSOR2_TYPE_CHOICES[self.types_idx];
+                        self.shared
+                            .status(|s| s.note(format!("sensorType rejected ({t}); asking for \"{next}\"")));
+                        // The rejected request created no subscription: nothing to cancel.
+                        self.drop_subscription();
+                        self.subscribe();
+                    }
                     MrcuError::PermissionDenied(t) => {
-                        if self.register_next() {
-                            self.probe();
+                        if self.shape_idx < Shape::ORDER.len() {
+                            self.next_connection("permission denied");
                         } else {
                             self.set_state(State::Denied(t));
                         }
@@ -443,25 +537,60 @@ impl Worker {
         }
     }
 
+    /// The stream must arrive at roughly the requested rate; the service starts at one
+    /// sample per second and may not keep an interval set earlier. Re-request it if slow.
+    fn check_rate(&mut self, t_us: u64) {
+        let (start, n) = &mut self.rate_window;
+        if *start == 0 {
+            self.rate_window = (t_us, 1);
+            return;
+        }
+        if t_us.saturating_sub(*start) < 1_000_000 {
+            *n += 1;
+            return;
+        }
+        let hz = *n as f32 * 1e6 / t_us.saturating_sub(*start).max(1) as f32;
+        self.rate_window = (t_us, 1);
+        let want_hz = 1000.0 / self.want_ms.max(1) as f32;
+        if hz < want_hz * 0.4 && self.interval_fixes < 20 {
+            self.interval_fixes += 1;
+            self.shared.status(|s| {
+                s.note(format!(
+                    "stream at {hz:.0}/s, wanted {want_hz:.0}/s; setting the interval again"
+                ))
+            });
+            self.set_interval();
+        }
+    }
+
     fn timers(&mut self) {
+        let now = now_us();
+        if self.want_running && self.bus.is_none() && now >= self.next_action_us {
+            // Every connection failed: start over now and then (the remote may have woken,
+            // or the service may have started late).
+            if matches!(self.state(), State::Failed(_)) {
+                self.next_action_us = now + 8_000_000;
+                self.start();
+            }
+            return;
+        }
         if !self.want_running || self.bus.is_none() {
             return;
         }
-        let now = now_us();
+        if self.resubscribe_at.is_some_and(|t| now >= t) {
+            self.resubscribe_at = None;
+            self.subscribe();
+        }
         match self.state() {
-            State::Probing if now - self.probe_sent_us > 2_500_000 => {
-                self.shared
-                    .status(|s| s.note("no reply to getAPIVersion; trying legacy API".into()));
-                self.legacy = true;
-                self.subscribe();
+            State::Probing if now - self.probe_sent_us > 2_000_000 => {
+                self.next_connection("no reply");
             }
             State::Streaming | State::Subscribed | State::Subscribing
-                if now - self.last_data_us > 1_500_000 =>
+                if now - self.last_data_us > 2_500_000 =>
             {
                 // Stream stalled: the remote may have gone to sleep or the subscription died.
                 if self.legacy {
-                    self.unsubscribe();
-                    self.subscribe();
+                    self.resubscribe();
                 } else {
                     self.set_state(State::Sleeping);
                     self.call("sensor2/getSensorState", "{}", Call::State);
@@ -473,8 +602,7 @@ impl Worker {
                 if self.legacy {
                     self.subscribe();
                 } else if matches!(self.state(), State::Failed(_)) {
-                    self.unsubscribe();
-                    self.subscribe();
+                    self.resubscribe();
                 } else {
                     self.call("sensor2/getSensorState", "{}", Call::State);
                 }
@@ -607,6 +735,11 @@ impl MotionHub {
                 next_action_us: 0,
                 probe_sent_us: 0,
                 retried_duplicate: false,
+                types_idx: 0,
+                want_ms: 10,
+                rate_window: (0, 0),
+                interval_fixes: 0,
+                resubscribe_at: None,
             }
             .run()
         });

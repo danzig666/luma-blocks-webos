@@ -9,7 +9,7 @@
 #   TV_KEY=~/.ssh/tv_webos   ssh key (devmode: the key from `ares-novacom --getkey`)
 #   FLAVOR=debug|release     which app identity to act on (default debug)
 #
-# Usage: scripts/tv.sh install <ipk> | launch | stop | logs | selftest | traces <dir> | remove
+# Usage: scripts/tv.sh install <ipk> | launch | stop | logs | selftest | motionprobe | traces <dir> | remove
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$ROOT/.tv.env" ] && . "$ROOT/.tv.env"
@@ -58,6 +58,11 @@ case "$cmd" in
     # NOTE: this is a shell context, not the launcher's sandbox: Luna access results here do
     # not prove what the launched app may do (use the in-app Input diagnostics for that).
     "${SSH[@]}" "cd $APP_DIR && HOME=$APP_DIR ./bin/luma-blocks --self-test"
+    ;;
+  motionprobe)
+    # Connects to the remote's motion sensor for 10 s and prints every connection step and
+    # the measured rate. Same caveat as selftest: a shell is not the launcher's sandbox.
+    "${SSH[@]}" "cd $APP_DIR && HOME=$APP_DIR APPID=$APP_ID ./bin/luma-blocks --motion-probe 10"
     ;;
   traces)
     out="${1:-traces}"

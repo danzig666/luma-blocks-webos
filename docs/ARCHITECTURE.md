@@ -70,6 +70,10 @@ pure crates and runs on any desktop.
 * **Calibration** probes measure the rotation axis of each guided motion from the integrated
   gyro at its largest excursion (so out-and-back motions read correctly), and the try-it step
   can flip the twist, sideways and drop directions individually.
+* **Pointer image**: on webOS the app installs its own arrow as the SDL cursor. SDL-webOS
+  builds its default arrow from LG's cursor PNGs; when those cannot be loaded, the pointer
+  vanishes for good after the first time the game hides it. With our own image, hiding during
+  play and showing again in menus is reliable.
 * **Pointing** anchor convention: the aim selects the **horizontal centre of the piece's
   occupied cells**. Column hysteresis prevents flicker. The piece moves only through legal
   one-column moves, and the ghost shows the actual reachable placement. A small target marker
@@ -93,9 +97,9 @@ file (`scoring.rs`).
 | Rust + SDL2 renderer (OpenGL ES 2 backend), no engine | Same proven route as the owner's RemoteDesk TV on this C3; SDL's renderer is itself GLES2 on webOS | Build/ABI verified; on-TV rendering unverified for this app |
 | Bundled webosbrew **SDL-webOS 2.30.12** in `lib/`, DT_RPATH `$ORIGIN/../lib` | The TV's own SDL2 uses LG's shifted event layout; the launcher's `LD_LIBRARY_PATH` would beat DT_RUNPATH | Proven by RemoteDesk TV on the C3; this app also detects the loaded layout at runtime (`keys.rs`) |
 | openlgtv **buildroot-nc4** SDK (x86_64 Linux host), armv7 softfp, glibc 2.12 sysroot | Builds on CI runners. The plx-native NDK route requires macOS or arm64 Linux hosts (its `docs/building.md`) | Verified in this environment and CI |
-| **Luna via `dlopen`** of `libluna-service2.so.3` + glib, own thread and glib context | No link-time webOS dependency; the app degrades to "motion unavailable" | Headers checked against SDK sysroot (LS2 3.21); on-TV behaviour unverified |
-| Registration shapes tried in order: app service (app id), named (app id), anonymous, anonymous with app-id-tagged calls | Which shape the hub accepts and whether `mrcu` answers depend on the generated role file | Unverified; every attempt is logged and shown in diagnostics |
-| `sensor2/getSensorEventData` (subscribe, ~100 Hz via `setSensorInterval` within reported bounds), legacy `sensor/getSensorData` (`callbackInterval` 1 = 100/s) fallback | LG documentation; sensor2 is documented for webOS TV 24+ and legacy is discouraged | Documentation only; field conventions to be confirmed with real samples |
+| **Luna via `dlopen`**, first through the TV's own `libhelpers.so.2` (`HLunaServiceCall`, the path SDL-webOS uses for its own system calls), then `libluna-service2.so.3` + glib on our own thread and glib context, then the `luna-send-pub` / `luna-send` commands | No link-time webOS dependency; the app degrades to "motion unavailable" | Headers checked against the SDK sysroot (LS2 3.21, webos-helpers); tested on the host against a stand-in service; on-TV behaviour unverified |
+| Connections tried in order: helper (public, private), app service (app id), named (app id), anonymous, anonymous with app-id-tagged calls, `luna-send-pub`, `luna-send`. A connection counts once `sensor2/getSensorState` answers; no reply within 2 s or a denial moves on, and after all fail the app retries every 8 s | Which path the hub accepts and whether `mrcu` answers depend on the generated role file and jail | Unverified; every attempt is logged, shown in diagnostics and printed by `--motion-probe` |
+| `sensor2/getSensorEventData` (subscribe; `sensorType` falls back to `"all"` if rejected), then ~100 Hz via `setSensorInterval` **after** the subscription is confirmed (LG's sample does the same; the service starts at 1000 ms) and again whenever the measured rate is too low; legacy `sensor/getSensorData` (`callbackInterval` 1 = 100/s) fallback | LG documentation; sensor2 is documented for webOS TV 24+ and legacy is discouraged | Documentation only; field conventions to be confirmed with real samples |
 | Fonts: Inter (OFL) | Legible at distance, licensed for distribution | n/a |
 
 ## Reference research

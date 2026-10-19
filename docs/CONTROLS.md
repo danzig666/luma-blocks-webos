@@ -75,6 +75,7 @@ Tips:
 | Symptom | Try |
 |---|---|
 | "Remote motion is unavailable" | Move the remote to wake it, then **Try again**. Or choose **Play with buttons**; the game never resumes on its own. |
+| "The remote's motion sensor is not answering" | Move the remote. The grey "Motion: …" line under the message says which step failed; please send a photo of it. The app keeps retrying every few seconds. |
 | Menu says "Motion not available" / "not permitted" | Your TV or remote does not offer the sensor to apps. Circles, flicks and pointing still work from the pointer; twist needs the sensor. Please report it with **Input diagnostics** (Settings → More → Developer options). |
 | The piece follows the remote back | Choose **Swinging** instead of Pointing (Settings → Move sideways by). |
 | Pointing aim is off-centre | Recenter (Blue), or run the motion setup again. |

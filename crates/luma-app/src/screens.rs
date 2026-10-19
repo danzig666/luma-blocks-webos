@@ -850,7 +850,13 @@ impl App {
                         },
                         None,
                     ),
-                    Screen::MotionLost => (S::MOTION_LOST_TITLE, Some(S::MOTION_LOST_BODY.to_owned())),
+                    Screen::MotionLost => (
+                        S::MOTION_LOST_TITLE,
+                        Some(match self.motion_detail() {
+                            Some(d) => format!("{}\n\n{d}", S::MOTION_LOST_BODY),
+                            None => S::MOTION_LOST_BODY.to_owned(),
+                        }),
+                    ),
                     _ => {
                         let o = self.over.as_ref();
                         let title = match o.map(|o| (o.mode, o.finished)) {

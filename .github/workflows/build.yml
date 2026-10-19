@@ -51,6 +51,8 @@ jobs:
         run: cargo test --locked --workspace
       - name: app flow test (headless)
         run: cargo run --locked -p luma-app -- --flow-test
+      - name: motion connection against a stand-in mrcu service
+        run: cargo build --locked -p luma-app && scripts/motion-probe-test.sh
       - name: screenshots (software render under Xvfb)
         run: |
           xvfb-run -s "-screen 0 1920x1080x24" env SDL_AUDIODRIVER=dummy cargo run --locked -p luma-app -- --shots shots
