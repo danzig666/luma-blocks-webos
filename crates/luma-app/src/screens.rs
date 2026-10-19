@@ -43,6 +43,7 @@ enum Act {
     DropGesture,
     DropSlide,
     RemoteHud,
+    RollComp,
     SensSide,
     SensRot,
     SensDrop,
@@ -208,6 +209,10 @@ impl App {
                     (
                         Item::choice(S::REMOTE_HUD, on_off(st.remote_hud)).disabled(!motion),
                         Act::RemoteHud,
+                    ),
+                    (
+                        Item::choice(S::ROLL_COMP, on_off(p.roll_compensation)).disabled(!motion),
+                        Act::RollComp,
                     ),
                     (
                         Item::choice(S::SENS_SIDE, format!("{:.1}", p.sens_horizontal)).disabled(!motion),
@@ -494,6 +499,7 @@ impl App {
             }
             Act::DropGesture => st.profile.gesture_drop = !st.profile.gesture_drop,
             Act::RemoteHud => st.remote_hud = !st.remote_hud,
+            Act::RollComp => st.profile.roll_compensation = !st.profile.roll_compensation,
             Act::DropSlide => {
                 let opts = [
                     0,
@@ -690,17 +696,15 @@ impl App {
             Some(Act::DropGesture | Act::SensDrop) => Some(crate::illus::Illus::Drop),
             _ => None,
         };
-        if focused == Some(Act::DropSlide) {
-            let r = Rect::new(1400, 250, 420, 300);
+        let help = match focused {
+            Some(Act::DropSlide) => Some(S::DROP_SLIDE_HELP),
+            Some(Act::RollComp) => Some(S::ROLL_COMP_HELP),
+            _ => None,
+        };
+        if let Some(text) = help {
+            let r = Rect::new(1400, 250, 420, 360);
             g.round(r, 28, theme::PANEL);
-            g.paragraph(
-                S::DROP_SLIDE_HELP,
-                r.x() + 30,
-                r.y() + 34,
-                360,
-                26.0,
-                theme::TEXT_DIM,
-            );
+            g.paragraph(text, r.x() + 30, r.y() + 34, 360, 26.0, theme::TEXT_DIM);
             return;
         }
         if let Some(il) = il {

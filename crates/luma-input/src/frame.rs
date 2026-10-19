@@ -139,19 +139,30 @@ impl AimTracker {
     /// Yaw and pitch rates (deg/s) in room directions: the body-frame rates turned by the
     /// remote's roll, so a remote held rolled still moves left/right and up/down the way the
     /// player sees it.
-    fn room_rates(&self, g: Vec3, up: Vec3, right: Vec3, calib: &Calibration) -> (f32, f32) {
+    fn room_rates(
+        &self,
+        g: Vec3,
+        up: Vec3,
+        right: Vec3,
+        calib: &Calibration,
+        cfg: &Thresholds,
+    ) -> (f32, f32) {
         // Screen-plane rates (x right, y down) as calibrated for the neutral hold...
         let (bx, by) = (-g.dot(up) * calib.yaw_sign, -g.dot(right) * calib.pitch_sign);
         // ...turned by how the remote is rolled.
-        let (sn, cs) = self.screen_roll(calib).sin_cos();
+        let (sn, cs) = self.screen_roll(calib, cfg).sin_cos();
         let (x, y) = (cs * bx - sn * by, sn * bx + cs * by);
         (x, -y)
     }
 
-    /// The rotation in the screen plane that compensates the remote's roll, from gravity.
-    /// (The fit against LG's pointer is shown in diagnostics only: on the TV it made sideways
-    /// movement fail in 0.2.11, so its convention is not trusted until verified there.)
-    fn screen_roll(&self, calib: &Calibration) -> f32 {
+    /// The rotation in the screen plane that compensates the remote's roll, from gravity,
+    /// when roll compensation is on (off by default: on the TV, 0.2.10-0.2.12 turned every
+    /// direction wrongly with it, so it waits for verification there). The fit against LG's
+    /// pointer is shown in diagnostics only.
+    fn screen_roll(&self, calib: &Calibration, cfg: &Thresholds) -> f32 {
+        if !cfg.roll_compensation {
+            return 0.0;
+        }
         match self.roll_rad {
             // Gravity gives the roll in the body frame; in the screen plane it turns the
             // other way, and a calibrated mirror flips it again.
@@ -325,7 +336,7 @@ impl AimTracker {
         });
         if let Some((yaw, pitch, _)) = raw_orient {
             let gyro_step = s.gyro.filter(|_| dt_int > 0.0).map(|g| {
-                let (y, p) = self.room_rates(g.scale(self.scale()), up, right, calib);
+                let (y, p) = self.room_rates(g.scale(self.scale()), up, right, calib, cfg);
                 (y * dt_int, p * dt_int)
             });
             self.check_orientation(yaw, pitch, gyro_step);
@@ -347,7 +358,7 @@ impl AimTracker {
         let use_gyro = s.gyro.is_some() && (cfg.prefer_gyro || orient.is_none());
         let (aim, twist, twist_rate_g) = if use_gyro {
             let g = s.gyro.unwrap().scale(self.scale());
-            let (yaw_rate, pitch_rate) = self.room_rates(g, up, right, calib);
+            let (yaw_rate, pitch_rate) = self.room_rates(g, up, right, calib, cfg);
             let twist_rate = g.dot(long) * calib.twist_sign;
             // Short-term integration with a slow leak toward zero (no long-term drift).
             let leak = (-dt_int / 4.0).exp();

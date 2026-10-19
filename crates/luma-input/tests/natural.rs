@@ -361,8 +361,8 @@ fn the_pointer_never_takes_over_once_the_sensor_has_reported() {
     assert_eq!(got.first(), Some(&Gesture::MoveRight), "{got:?}");
 }
 
-/// Holding the remote rolled (twisted about its length) must not change what a flick down or
-/// a sideways swing means: directions follow the room, not the remote's own axes.
+/// With roll compensation on, holding the remote rolled (twisted about its length) must not
+/// change what a flick down or a sideways swing means: directions follow the room.
 #[test]
 fn a_rolled_remote_still_drops_and_swings_the_right_way() {
     for roll in [-90.0f32, -60.0, -35.0, 35.0, 60.0, 90.0] {
@@ -370,6 +370,7 @@ fn a_rolled_remote_still_drops_and_swings_the_right_way() {
             let p = Profile {
                 rotation: rot,
                 horizontal: HorizontalStyle::Swing,
+                roll_compensation: true,
                 ..Profile::default()
             };
             let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
@@ -399,7 +400,10 @@ fn a_rolled_remote_still_drops_and_swings_the_right_way() {
 /// Same with firmware that reports gravity with the opposite sign.
 #[test]
 fn a_rolled_remote_works_with_an_inverted_accelerometer() {
-    let p = Profile::default();
+    let p = Profile {
+        roll_compensation: true,
+        ..Profile::default()
+    };
     let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
     let mut s = Synth::new(60.0, 95);
     let flip = |v: Vec<luma_input::sample::MotionSample>| -> Vec<luma_input::sample::MotionSample> {
@@ -442,7 +446,10 @@ fn the_pointer_fit_agrees_with_gravity() {
 #[test]
 fn rolling_the_remote_during_play_keeps_drops_working() {
     for (roll, ms) in [(60.0f32, 1600.0), (-70.0, 2000.0), (85.0, 2600.0)] {
-        let p = Profile::default(); // twist rotation
+        let p = Profile {
+            roll_compensation: true,
+            ..Profile::default()
+        }; // twist rotation
         let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
         let mut s = Synth::new(60.0, 97);
         s.cursor_px_per_deg = Some(40.0);
@@ -465,4 +472,29 @@ fn rolling_the_remote_during_play_keeps_drops_working() {
             "roll {roll} over {ms} ms: {drops}/6 drops, other {other:?}"
         );
     }
+}
+
+/// Roll compensation is off by default: then the accelerometer must have no influence on any
+/// direction (exactly the calibrated gyro axes, as before 0.2.10).
+#[test]
+fn by_default_the_accelerometer_never_changes_directions() {
+    let run = |strip_accel: bool| {
+        let mut e = GestureEngine::new(Thresholds::default(), Profile::default(), Calibration::default());
+        let mut s = Synth::new(60.0, 98);
+        s.base = (0.0, 0.0, 50.0);
+        let mut v = s.hold(1500.0);
+        v.extend(s.motion(800.0, |q| (6.0 * (q * 5.0).sin(), -4.0 * q, 0.0)));
+        let mut aims = Vec::new();
+        for mut m in v {
+            if strip_accel {
+                m.accel = None;
+            }
+            e.tick(m.t_us);
+            e.motion(&m);
+            let f = e.debug.last_frame;
+            aims.push((f.aim.x, f.aim.y));
+        }
+        aims
+    };
+    assert_eq!(run(false), run(true));
 }

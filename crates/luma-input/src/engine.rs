@@ -258,7 +258,7 @@ impl GestureEngine {
                 self.still_since = None;
             }
         }
-        if let Some(f) = self.sensor.motion(s, &self.calib, &self.cfg) {
+        if let Some(f) = self.sensor.motion(s, &self.calib, &self.eff) {
             self.last_motion_us = Some(s.t_us);
             self.stale = false;
             if self.active != Some(AimSource::Sensor) {

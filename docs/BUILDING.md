@@ -72,7 +72,7 @@ scripts/smoke-armel.sh target/armv7-unknown-linux-gnueabi/release/luma-blocks de
 python3 scripts/gen-notices.py --licenses-dir build/licenses && cp -r deps-out/webos/licenses/* build/licenses/
 for f in release debug; do
   python3 scripts/package-ipk.py --binary target/armv7-unknown-linux-gnueabi/release/luma-blocks \
-    --sdl-lib deps-out/webos/lib/libSDL2-2.0.so.0 --version 0.2.12 --flavor $f \
+    --sdl-lib deps-out/webos/lib/libSDL2-2.0.so.0 --version 0.2.13 --flavor $f \
     --strip $WEBOS_SDK/bin/arm-webos-linux-gnueabi-strip --licenses build/licenses --out dist
 done
 ```

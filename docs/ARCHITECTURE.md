@@ -33,12 +33,13 @@ pure crates and runs on any desktop.
   asleep, duplicate subscription, too many clients, bad interval, malformed.
 * **Frames**: motion comes from the **gyroscope** whenever it is delivered (a direct
   body-frame rate with documented axes); its units are cross-checked against the orientation at
-  runtime (rad/s per LG, deg/s detected automatically). The yaw and pitch rates are turned by
-  the remote's roll about its length, so a remote held rolled still moves in room directions.
-  The roll comes from gravity (accelerometer, smoothed, only while it reads about 1 g). A
-  decaying complex fit of LG's pointer steps (`coordinate`) against our gyro steps gives the
-  same rotation as seen by the firmware; it is shown in diagnostics for comparison only,
-  because using it on the TV (0.2.11) broke sideways movement. The orientation's yaw and pitch are
+  runtime (rad/s per LG, deg/s detected automatically). With the experimental, opt-in roll
+  compensation (off by default), the yaw and pitch rates are turned by the remote's roll about
+  its length from gravity (accelerometer, smoothed, only while it reads about 1 g). On the TV
+  0.2.10-0.2.12 applied it unconditionally and every direction went wrong, so it stays off
+  until verified there; with it off, the accelerometer has no influence on any direction. A
+  fit of LG's pointer steps (`coordinate`) against our gyro steps is shown in diagnostics for
+  comparison. The orientation's yaw and pitch are
   compared with the gyro's while the remote moves; if the firmware reports the rotation vector
   in the opposite convention (which mirrors pointing), the absolute aim is flipped to match. Short-term aim is integrated from the gyro
   with a slow leak. For the Pointing style, absolute aim comes from the orientation relative to

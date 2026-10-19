@@ -15,6 +15,8 @@ pub struct Thresholds {
     // --- Aim frame -------------------------------------------------------------------
     /// Use the gyroscope for motion (recommended); orientation only when it is missing.
     pub prefer_gyro: bool,
+    /// Set from the profile: turn motion by the remote's roll from the accelerometer.
+    pub roll_compensation: bool,
     /// Degrees of remote yaw/pitch that correspond to one screen height of aim movement.
     pub deg_per_sh: f32,
     /// Exponential smoothing time constant for aim velocity, ms.
@@ -136,6 +138,7 @@ impl Default for Thresholds {
     fn default() -> Self {
         Thresholds {
             prefer_gyro: true,
+            roll_compensation: false,
             deg_per_sh: 24.0,
             velocity_smoothing_ms: 22.0,
             max_sample_gap_ms: 150.0,
@@ -224,6 +227,10 @@ pub struct Profile {
     pub sens_horizontal: f32,
     pub sens_rotation: f32,
     pub sens_drop: f32,
+    /// Turn motion by the remote's roll (from the accelerometer) so a remote held rolled
+    /// still moves in room directions. Experimental and off by default: if the TV's
+    /// accelerometer axes differ from the gyroscope's, it twists every direction.
+    pub roll_compensation: bool,
 }
 
 impl Default for Profile {
@@ -235,6 +242,7 @@ impl Default for Profile {
             sens_horizontal: 1.0,
             sens_rotation: 1.0,
             sens_drop: 1.0,
+            roll_compensation: false,
         }
     }
 }
@@ -258,6 +266,7 @@ impl Profile {
 /// motion needed. Timing limits are not scaled.
 pub fn effective(t: &Thresholds, p: &Profile) -> Thresholds {
     let mut e = t.clone();
+    e.roll_compensation = p.roll_compensation;
     let h = p.sens_horizontal.clamp(0.5, 2.0);
     let r = p.sens_rotation.clamp(0.5, 2.0);
     let d = p.sens_drop.clamp(0.5, 2.0);

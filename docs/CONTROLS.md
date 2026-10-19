@@ -37,10 +37,12 @@
 | **Move after a drop** | after a drop (gesture or OK) the piece rests on the stack for a moment before it locks; a late swing, twist or button press still slides or turns it, and it drops straight down again if it slides off a ledge. A swing that is under way when the time runs out holds the piece up to 0.4 s longer, so its move still lands. A shrinking line under the piece shows the time left. Drop again to lock at once. Off / Short (0.3 s, default) / Long (0.6 s). |
 
 * Rotation and sideways styles combine freely.
-* Directions follow the room, not the remote: held rolled (turned about its length), a flick
-  down still drops and a swing still moves left or right. The roll comes from gravity. Input
-  diagnostics shows it, next to the roll implied by LG's own pointer for comparison
-  ("roll: gravity …, pointer …"; the two should be about equal with opposite signs).
+* Directions are measured along the remote's own axes, as calibrated. **Roll compensation
+  (experimental, off by default)** turns them by how the remote is rolled, from its
+  accelerometer, so a remote held tilted still swings left/right and flicks down. On the TV
+  it is not verified yet: if directions go wrong with it on, turn it off. Input diagnostics
+  shows the measured roll ("roll: gravity …, pointer …"; the two should be about equal with
+  opposite signs when it can work).
 * A twist that stops halfway (a change of grip) is taken as the new resting posture, not as
   a gesture in progress.
 * While you play with motion, a small live remote under the stats (MOTION) follows your
