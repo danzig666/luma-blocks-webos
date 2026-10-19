@@ -258,3 +258,45 @@ fn sloppy_drops_never_move_sideways() {
         );
     }
 }
+
+/// A deliberate swing right after a drop (to slide the landed piece) is recognized, and how
+/// soon after the drop it arrives is reported (the game holds the lock while it happens).
+#[test]
+fn a_swing_right_after_a_drop_slides_the_piece() {
+    for rot in [RotationStyle::Twist, RotationStyle::Circle] {
+        let p = Profile {
+            rotation: rot,
+            horizontal: HorizontalStyle::Swing,
+            ..Profile::default()
+        };
+        let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+        let mut s = Synth::new(60.0, 91);
+        feed(&mut e, &s.hold(500.0));
+        let mut got = Vec::new();
+        let mut t_drop = 0;
+        let mut t_move = 0;
+        // Flick down, recoil, and swing at once (no rest in between).
+        let mut v = s.motion(150.0, |q| (0.0, -18.0 * ease(q), 0.0));
+        v.extend(s.motion(200.0, |q| (0.0, 10.0 * ease(q), 0.0)));
+        v.extend(s.motion(140.0, |q| (5.0 * ease(q), 0.0, 0.0)));
+        v.extend(s.hold(300.0));
+        for smp in &v {
+            e.tick(smp.t_us);
+            e.motion(smp);
+            for c in e.take() {
+                if c.gesture == Gesture::HardDrop {
+                    t_drop = c.t_us;
+                } else if t_move == 0 {
+                    t_move = c.t_us;
+                }
+                got.push(c.gesture);
+            }
+        }
+        println!(
+            "{rot:?}: {got:?}, move {} ms after the drop",
+            (t_move.saturating_sub(t_drop)) / 1000
+        );
+        assert_eq!(got.first(), Some(&Gesture::HardDrop), "{rot:?}: {got:?}");
+        assert!(got.contains(&Gesture::MoveRight), "{rot:?}: {got:?}");
+    }
+}

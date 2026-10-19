@@ -331,6 +331,14 @@ impl Game {
         self.slide_left_us > 0
     }
 
+    /// Keep a sliding piece from locking a little longer (a move is on its way), never
+    /// beyond the full slide time.
+    pub fn hold_slide(&mut self, us: u64) {
+        if self.is_sliding() {
+            self.slide_left_us = (self.slide_left_us + us).min(self.rules.drop_slide_us as u64);
+        }
+    }
+
     /// A successful move or rotation while grounded spends one lock reset. While sliding
     /// after a hard drop the piece drops straight down again instead and the slide time is
     /// not extended.
@@ -732,6 +740,21 @@ mod tests {
         assert!(!g.apply(Action::Hold), "no hold while sliding");
         g.apply(Action::HardDrop);
         assert!(!g.is_sliding());
+        assert_eq!(g.pieces_placed, 1);
+    }
+
+    #[test]
+    fn holding_the_slide_delays_the_lock_but_never_past_the_full_time() {
+        let mut g = sliding(Mode::Marathon);
+        set_active(&mut g, Kind::O, 0, 4, 20);
+        g.apply(Action::HardDrop);
+        g.tick(200_000);
+        g.hold_slide(100_000);
+        g.tick(100_000);
+        assert!(g.is_sliding(), "held");
+        g.hold_slide(1_000_000);
+        assert_eq!(g.slide_left_us, 250_000, "capped at the full slide time");
+        g.tick(250_000);
         assert_eq!(g.pieces_placed, 1);
     }
 

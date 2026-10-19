@@ -59,8 +59,9 @@ pure crates and runs on any desktop.
     further one `swing_col_growth` wider); Flick moves one column per stroke. The columns are
     held until the stroke ends and dropped if it curves away at speed (the side of a circle or
     the wind-up of a downward flick keeps its speed, a swing slows down before it stops or
-    turns back). A drop candidate or a just-committed drop owns the motion: no stroke starts
-    or commits during its wind-up or recoil. A rejected stroke still opens a return window, so its pull back
+    turns back). A drop candidate owns the motion and the post-commit freeze covers the start
+    of its recoil, so neither moves the piece; a deliberate swing after that may still slide
+    the dropped piece, and the app holds the lock while that swing is under way. A rejected stroke still opens a return window, so its pull back
     never moves the piece the other way. When the stroke ends, opposite motion within a window and
     up to 1.6× the stroke's travel is the **return pull** and moves nothing; the window closes
     early when the remote rests or the player continues in the same direction. Slow motion never

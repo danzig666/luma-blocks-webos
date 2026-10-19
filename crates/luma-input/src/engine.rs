@@ -362,8 +362,10 @@ impl GestureEngine {
             // swing looks like the start of one); a committed circle still cancels it.
             let rotation_blocks = rotating && !circles;
             let blocked = rotation_blocks || !commits.is_empty() || settling;
-            // A drop owns its wind-up and its recoil: no sideways move from either.
-            let dropping = self.drop.is_candidate() || self.drop.is_latched();
+            // A drop owns its wind-up (and, through the post-commit freeze, the start of its
+            // recoil): no sideways move from either. After that a deliberate sideways swing
+            // may still slide the dropped piece.
+            let dropping = self.drop.is_candidate();
             moves = self.swing.update(&f, &c, circles, blocked, dropping);
             // A stroke that moved the piece is sideways movement: a circle starts after it,
             // so its out-and-back loop can never add up to a turn.

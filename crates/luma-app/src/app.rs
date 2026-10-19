@@ -70,6 +70,8 @@ pub struct Session {
     last_save_us: u64,
     pub ready_until: Option<u64>,
     pub practice_log: VecDeque<(u64, String)>,
+    /// Extra time a sliding piece has waited for a swing in progress, µs.
+    slide_hold_us: u64,
     pub sensor_seen: bool,
     missing_since: Option<u64>,
     pub buttons_only: bool,
@@ -90,6 +92,7 @@ impl Session {
             last_save_us: 0,
             ready_until: None,
             practice_log: VecDeque::new(),
+            slide_hold_us: 0,
             sensor_seen: false,
             missing_since: None,
             buttons_only: false,
@@ -804,6 +807,7 @@ impl App {
     fn update_game(&mut self, now: u64, commits: Vec<luma_input::Commit>) {
         let last_activity = self.last_activity;
         let motion_on = self.motion_control_active();
+        let swing_in_progress = motion_on && self.engine.swing.is_stroke();
         let streaming = self.motion.is_streaming(now);
         let needs_sensor = self.store.settings.profile.rotation == RotationStyle::Twist;
         let unavailable = self.motion.state().is_unavailable();
@@ -942,8 +946,18 @@ impl App {
             s.move_budget_us = 0;
         }
 
+        // A sliding piece waits (a little) for a swing that is under way: the swing's move
+        // comes when it ends, which is often just after the slide time.
+        let frame_us = now.saturating_sub(s.last_us);
+        if !s.game.is_sliding() {
+            s.slide_hold_us = 0;
+        } else if swing_in_progress && s.slide_hold_us < crate::store::DROP_SLIDE_SWING_HOLD_US {
+            s.game.hold_slide(frame_us);
+            s.slide_hold_us += frame_us;
+        }
+
         // Fixed-step simulation with bounded catch-up.
-        s.acc_us += now.saturating_sub(s.last_us);
+        s.acc_us += frame_us;
         s.last_us = now;
         let mut n = 0;
         while s.acc_us >= STEP_US && n < MAX_STEPS {

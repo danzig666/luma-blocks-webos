@@ -34,7 +34,7 @@
 | Move sideways by **pointing** | the piece follows the column you aim at (a faint marker above the board). Returning the remote moves the piece back, so this suits players who keep the remote aimed at the board. |
 | Move sideways by **flicking** | a short left or right flick moves exactly one column; the pull back is ignored. |
 | **Drop** | a quick downward flick of the wrist. Can be turned off (OK still drops). A small sideways movement just before the flick, and the bounce after it, never move the piece. |
-| **Move after a drop** | after a drop (gesture or OK) the piece rests on the stack for a moment before it locks; a late swing, twist or button press still slides or turns it, and it drops straight down again if it slides off a ledge. A shrinking line under the piece shows the time left. Drop again to lock at once. Off / Short (0.2 s, default) / Long (0.4 s). |
+| **Move after a drop** | after a drop (gesture or OK) the piece rests on the stack for a moment before it locks; a late swing, twist or button press still slides or turns it, and it drops straight down again if it slides off a ledge. A swing that is under way when the time runs out holds the piece up to 0.4 s longer, so its move still lands. A shrinking line under the piece shows the time left. Drop again to lock at once. Off / Short (0.3 s, default) / Long (0.6 s). |
 
 * Rotation and sideways styles combine freely.
 * Each gesture type has its own sensitivity (0.5–2.0). For Swing, higher sensitivity means

@@ -27,8 +27,10 @@ pub enum ControlMode {
 }
 
 /// "Move after a drop" choices, ms.
-pub const DROP_SLIDE_SHORT_MS: u32 = 200;
-pub const DROP_SLIDE_LONG_MS: u32 = 400;
+pub const DROP_SLIDE_SHORT_MS: u32 = 300;
+pub const DROP_SLIDE_LONG_MS: u32 = 600;
+/// While a swing is under way, a sliding piece waits up to this much longer to lock, µs.
+pub const DROP_SLIDE_SWING_HOLD_US: u64 = 400_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -95,7 +97,12 @@ impl Default for Settings {
 impl Settings {
     pub fn sanitize(&mut self) {
         self.profile.clamp();
-        self.drop_slide_ms = self.drop_slide_ms.min(DROP_SLIDE_LONG_MS);
+        // 0.2.2 - 0.2.5 offered 0.2 s and 0.4 s; both turned out too short for a swing.
+        self.drop_slide_ms = match self.drop_slide_ms {
+            200 => DROP_SLIDE_SHORT_MS,
+            400 => DROP_SLIDE_LONG_MS,
+            ms => ms.min(DROP_SLIDE_LONG_MS),
+        };
         self.glow = if self.glow.is_finite() {
             self.glow.clamp(0.4, 1.4)
         } else {
@@ -455,6 +462,20 @@ mod tests {
         assert!(d.join("records.json.corrupt").exists());
         assert!(!r.load_notes.is_empty());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn old_slide_times_grow_to_the_new_choices() {
+        for (old, new) in [(0, 0), (200, DROP_SLIDE_SHORT_MS), (400, DROP_SLIDE_LONG_MS)] {
+            let mut st = Settings {
+                drop_slide_ms: old,
+                ..Settings::default()
+            };
+            st.sanitize();
+            assert_eq!(st.drop_slide_ms, new);
+            st.sanitize();
+            assert_eq!(st.drop_slide_ms, new, "stable");
+        }
     }
 
     #[test]

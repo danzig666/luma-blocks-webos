@@ -550,7 +550,7 @@ fn flow_test() -> i32 {
     press(&mut a, Button::Right);
     let x1 = a.session.as_ref().map(|s| s.game.active.x).unwrap_or(0);
     check("after a drop the piece can still slide", sliding && x1 == x0 + 1);
-    wait(&mut a, 350);
+    wait(&mut a, 450);
     let placed = a.session.as_ref().map(|s| s.game.pieces_placed).unwrap_or(0);
     check("buttons move, rotate and drop", placed == 1);
     press(&mut a, Button::Back);
