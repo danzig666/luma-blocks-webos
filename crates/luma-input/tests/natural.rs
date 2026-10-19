@@ -332,3 +332,31 @@ fn the_first_gesture_after_a_pause_in_the_data_counts() {
         assert_eq!(got.first(), Some(&g), "after a pause: {got:?}");
     }
 }
+
+/// While the sensor pauses, the system pointer may still report (stuck at a screen edge).
+/// It must not take over: the next sensor gesture counts as usual.
+#[test]
+fn the_pointer_never_takes_over_once_the_sensor_has_reported() {
+    let p = Profile {
+        rotation: RotationStyle::Twist,
+        horizontal: HorizontalStyle::Swing,
+        ..Profile::default()
+    };
+    let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+    let mut s = Synth::new(60.0, 93);
+    feed(&mut e, &s.hold(600.0));
+    // Half a second without sensor data; the pointer sits at the right edge and jitters.
+    let t0 = s.t_us;
+    let _ = s.hold(500.0);
+    for i in 0..25u64 {
+        let t = t0 + i * 20_000;
+        e.tick(t);
+        e.pointer(
+            t,
+            luma_input::math::Vec2::new(1.777 - (i % 2) as f32 * 0.002, 0.5),
+        );
+    }
+    assert!(e.take().is_empty());
+    let got = feed(&mut e, &gestures::swing(&mut s, 1.0, 6.0, 140.0, 1.0));
+    assert_eq!(got.first(), Some(&Gesture::MoveRight), "{got:?}");
+}

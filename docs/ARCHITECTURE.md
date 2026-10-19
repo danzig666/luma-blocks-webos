@@ -80,6 +80,10 @@ pure crates and runs on any desktop.
     re-anchors without a jump.
   * Only one discrete action is accepted per trajectory.
   * A button press cancels candidates and adds a short guard against press jiggle.
+  * Once the sensor has delivered a sample, the system pointer never drives gestures again
+    (it is clamped at the screen edges and, as a second source, used to take over whenever
+    the sensor paused, resetting the gestures each time). It remains the fallback only for
+    remotes whose sensor never reports.
   * A pause in the sensor data (the Magic Remote stops reporting after a button press until
     it is moved) only resets the recognizers; gestures stay armed, so the movement that
     resumes the data counts. If the data resumes in the middle of a fast movement (a radio

@@ -261,8 +261,11 @@ impl GestureEngine {
     /// System pointer position in screen heights (pixels / screen height).
     pub fn pointer(&mut self, t_us: u64, aim: Vec2) {
         self.last_pointer = Some((t_us, aim));
-        if self.sensor_fresh(t_us) {
-            return; // the sensor stream drives gestures while it is alive
+        if self.last_motion_us.is_some() {
+            // Once the remote's motion sensor has reported, gestures use only its relative
+            // motion. The system pointer stops at the screen edges, and switching to it
+            // whenever the sensor pauses (button mode, a short gap) reset the gestures.
+            return;
         }
         let f = self.pointer.pointer(t_us, aim, &self.cfg);
         if self.active != Some(AimSource::Pointer) {

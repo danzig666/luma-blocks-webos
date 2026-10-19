@@ -46,7 +46,9 @@
   fewer degrees per column.
 * **Gesture practice** shows each recognized gesture and how long it took to decide.
 * The wrist twist needs the remote's motion sensor. Circles, swings, flicks and pointing also work
-  from the pointer alone.
+  from the pointer alone, but only on remotes whose motion sensor never reports: once the
+  sensor has reported, gestures use only its relative motion and never the on-screen
+  pointer (which stops at the screen edges).
 
 ## Motion setup
 
