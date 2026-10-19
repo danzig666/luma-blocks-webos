@@ -353,7 +353,7 @@ fn sideways(hor: HorizontalStyle, s: &mut Synth, dir: f32) -> (Vec<MotionSample>
         Gesture::MoveLeft
     };
     match hor {
-        // 8 degrees at 24 deg/SH and 0.10 SH per column: 1 + floor((0.333 - 0.05) / 0.1) = 3.
+        // 8 degrees at 24 deg/SH = 0.333 SH: columns at 0.05, 0.15 and 0.265 SH, so 3.
         HorizontalStyle::Swing => (gestures::swing(s, dir, 8.0, 160.0, 1.0), vec![g; 3]),
         HorizontalStyle::Flick => (gestures::flick(s, dir, 7.0, 120.0), vec![g]),
         HorizontalStyle::Pointing => (Vec::new(), Vec::new()),
@@ -395,12 +395,13 @@ fn swing_moves_proportionally_and_the_pull_back_is_ignored() {
         let p = profile(rot, HorizontalStyle::Swing);
         for hz in RATES {
             for (dir, g) in [(1.0, Gesture::MoveRight), (-1.0, Gesture::MoveLeft)] {
-                // degrees -> columns (2.4 degrees per column, the first one at 1.2 degrees)
+                // degrees -> columns: the first at 1.2 degrees, then 3.6, 6.4, 9.5, 13, 16.8,
+                // 21 degrees (each column a little wider than the one before)
                 for (amp, cols, ms, back) in [
                     (4.0, 2, 120.0, 1.0),
                     (8.0, 3, 160.0, 1.4),
-                    (14.0, 6, 220.0, 0.8),
-                    (20.0, 8, 260.0, 1.8),
+                    (14.0, 5, 220.0, 0.8),
+                    (20.0, 6, 260.0, 1.8),
                 ] {
                     let (mut e, mut s) = ready(p, hz, 31);
                     let got = feed(&mut e, &gestures::swing(&mut s, dir, amp, ms, back));
@@ -787,6 +788,8 @@ fn twenty_varied_attempts_per_gesture() {
                 let got = feed(&mut e, &v);
                 if got == vec![want] {
                     ok += 1;
+                } else if std::env::var("GESTURE_VERBOSE").is_ok() {
+                    println!("{rot:?}/{hor:?} {name} #{i} hz {hz} wob {wob:.2}: {got:?}");
                 }
                 extra += got.iter().filter(|g| **g != want).count()
                     + got
@@ -886,7 +889,8 @@ fn twenty_varied_swings_per_direction() {
                 let got = feed(&mut e, &v);
                 let n = got.iter().filter(|g| **g == want).count() as i32;
                 let bad = got.len() as i32 - n;
-                let expect = (1 + (((amp / 24.0) - 0.05) / 0.10) as i32).min(9);
+                let t = Thresholds::default();
+                let expect = luma_input::recognize::swing_columns(amp / t.deg_per_sh, &t);
                 if bad == 0 && (n - expect).abs() <= 1 && n >= 1 {
                     ok += 1;
                 }

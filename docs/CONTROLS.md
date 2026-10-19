@@ -29,11 +29,12 @@
 | Setting | Gesture |
 |---|---|
 | Rotate by **twisting the wrist** (default) | twist about the remote's length, like turning a key; to the right rotates clockwise. Come back towards your resting angle before the next twist. Holding the twist does not repeat. |
-| Rotate by **drawing a circle** | a compact circle with the remote's tip, clockwise or anticlockwise; about one turn. The piece does not drift while you draw. |
-| Move sideways by **swinging** (default) | a quick sideways swing moves the piece; a bigger swing moves it further (about 2.4° per column). **Pulling the remote back afterwards is ignored**, so you can swing, return to your comfortable position and swing again. Slow movements never move the piece. |
+| Rotate by **drawing a circle** | a compact, roundish circle with the remote's tip, clockwise or anticlockwise; about one turn. The piece does not drift while you draw. A swing and its pull back never count as a circle, even when they draw a flat loop. |
+| Move sideways by **swinging** (default) | a quick sideways swing moves the piece; a bigger swing moves it further. The first column needs about 1.2°, the second 3.6°, then 6.4°, 9.5°, 13°…: each further column needs a little more, so small swings stay precise. **Pulling the remote back afterwards is ignored**, so you can swing, return to your comfortable position and swing again. Slow movements never move the piece. With circle rotation the piece moves when the swing ends (about a tenth of a second later), because only then is it clear that the motion was not the side of a circle. |
 | Move sideways by **pointing** | the piece follows the column you aim at (a faint marker above the board). Returning the remote moves the piece back, so this suits players who keep the remote aimed at the board. |
 | Move sideways by **flicking** | a short left or right flick moves exactly one column; the pull back is ignored. |
 | **Drop** | a quick downward flick of the wrist. Can be turned off (OK still drops). |
+| **Move after a drop** | after a drop (gesture or OK) the piece rests on the stack for a moment before it locks; a late swing, twist or button press still slides or turns it, and it drops straight down again if it slides off a ledge. A shrinking line under the piece shows the time left. Drop again to lock at once. Off / Short (0.2 s, default) / Long (0.4 s). |
 
 * Rotation and sideways styles combine freely.
 * Each gesture type has its own sensitivity (0.5–2.0). For Swing, higher sensitivity means

@@ -332,8 +332,17 @@ impl GestureEngine {
                 StrokeMode::Columns
             };
             let settling = f.t_us < self.freeze_until || self.circle.phase == Phase::Latched;
-            let blocked = rotating || self.drop.is_candidate() || !commits.is_empty() || settling;
+            // With circles, a stroke holds its columns until it ends and is dropped if it
+            // curves away like a circle, so a circle candidate need not block it (a curved
+            // swing looks like the start of one); a committed circle still cancels it.
+            let rotation_blocks = rotating && !circles;
+            let blocked = rotation_blocks || self.drop.is_candidate() || !commits.is_empty() || settling;
             moves = self.swing.update(&f, &c, circles, blocked);
+            // A stroke that moved the piece is sideways movement: a circle starts after it,
+            // so its out-and-back loop can never add up to a turn.
+            if self.swing.is_moving_stroke() || !moves.is_empty() {
+                self.circle.cancel();
+            }
         }
 
         // One discrete action per trajectory: rotation, then drop; strokes yield to both.

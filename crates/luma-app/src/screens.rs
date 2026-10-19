@@ -40,6 +40,7 @@ enum Act {
     Rotation,
     Sideways,
     DropGesture,
+    DropSlide,
     SensSide,
     SensRot,
     SensDrop,
@@ -197,6 +198,10 @@ impl App {
                     (
                         Item::choice(S::DROP_GESTURE, on_off(p.gesture_drop)).disabled(!motion),
                         Act::DropGesture,
+                    ),
+                    (
+                        Item::choice(S::DROP_SLIDE, drop_slide_label(st.drop_slide_ms)),
+                        Act::DropSlide,
                     ),
                     (
                         Item::choice(S::SENS_SIDE, format!("{:.1}", p.sens_horizontal)).disabled(!motion),
@@ -482,6 +487,14 @@ impl App {
                 st.profile.horizontal = order[(i + d).rem_euclid(3) as usize];
             }
             Act::DropGesture => st.profile.gesture_drop = !st.profile.gesture_drop,
+            Act::DropSlide => {
+                let opts = [
+                    0,
+                    crate::store::DROP_SLIDE_SHORT_MS,
+                    crate::store::DROP_SLIDE_LONG_MS,
+                ];
+                st.drop_slide_ms = cycle(&opts, st.drop_slide_ms, d);
+            }
             Act::SensSide => st.profile.sens_horizontal = step(st.profile.sens_horizontal, d),
             Act::SensRot => st.profile.sens_rotation = step(st.profile.sens_rotation, d),
             Act::SensDrop => st.profile.sens_drop = step(st.profile.sens_drop, d),
@@ -626,6 +639,19 @@ impl App {
             Some(Act::DropGesture | Act::SensDrop) => Some(crate::illus::Illus::Drop),
             _ => None,
         };
+        if focused == Some(Act::DropSlide) {
+            let r = Rect::new(1400, 250, 420, 300);
+            g.round(r, 28, theme::PANEL);
+            g.paragraph(
+                S::DROP_SLIDE_HELP,
+                r.x() + 30,
+                r.y() + 34,
+                360,
+                26.0,
+                theme::TEXT_DIM,
+            );
+            return;
+        }
         if let Some(il) = il {
             let r = Rect::new(1400, 250, 420, 420);
             g.round(r, 28, theme::PANEL);
@@ -897,6 +923,16 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+fn drop_slide_label(ms: u32) -> String {
+    match ms {
+        0 => S::DROP_SLIDE_OFF.to_owned(),
+        m if m <= crate::store::DROP_SLIDE_SHORT_MS => {
+            format!("{} ({:.1} s)", S::DROP_SLIDE_SHORT, m as f32 / 1000.0)
+        }
+        m => format!("{} ({:.1} s)", S::DROP_SLIDE_LONG, m as f32 / 1000.0),
     }
 }
 

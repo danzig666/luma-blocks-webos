@@ -701,6 +701,19 @@ pub fn draw_game(g: &mut Gfx, fx: &mut Fx, b: &BoardInput) {
             let col = if *above { scale(c, 0.6) } else { c };
             draw_block(g, *r, alpha(col, spawn), bright, look, Some(p.kind));
         }
+        // Resting after a drop: a shrinking line under the piece shows the time left to
+        // slide it.
+        if game.is_sliding() && game.rules.drop_slide_us > 0 && !rects.is_empty() {
+            let frac = game.slide_left_us as f32 / game.rules.drop_slide_us as f32;
+            let x0 = rects.iter().map(|(r, _)| r.x()).min().unwrap_or(0);
+            let x1 = rects.iter().map(|(r, _)| r.right()).max().unwrap_or(0);
+            let y = rects.iter().map(|(r, _)| r.bottom()).max().unwrap_or(0);
+            let w = ((x1 - x0) as f32 * frac).round() as i32;
+            if w > 2 {
+                let cx = (x0 + x1) / 2;
+                g.round(Rect::new(cx - w / 2, y + 3, w as u32, 4), 2, alpha(c, 0.85));
+            }
+        }
         // Pointing target marker (never implies an impossible destination: it dims when the
         // ghost cannot reach it).
         if let Some((lo, w, reachable)) = b.target {

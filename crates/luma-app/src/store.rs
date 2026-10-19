@@ -26,6 +26,10 @@ pub enum ControlMode {
     Motion,
 }
 
+/// "Move after a drop" choices, ms.
+pub const DROP_SLIDE_SHORT_MS: u32 = 200;
+pub const DROP_SLIDE_LONG_MS: u32 = 400;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -50,6 +54,8 @@ pub struct Settings {
     pub auto_pause_s: u32,
     pub marathon_start_level: u32,
     pub zen_level: u32,
+    /// After a hard drop the piece can still be slid or turned this long, ms (0 = off).
+    pub drop_slide_ms: u32,
     /// Hide the system cursor during play while the motion sensor is streaming.
     pub hide_cursor: bool,
     pub developer: bool,
@@ -77,6 +83,7 @@ impl Default for Settings {
             auto_pause_s: 120,
             marathon_start_level: 1,
             zen_level: 1,
+            drop_slide_ms: DROP_SLIDE_SHORT_MS,
             hide_cursor: true,
             developer: false,
             legacy_quat_order: LegacyQuatOrder::default(),
@@ -88,6 +95,7 @@ impl Default for Settings {
 impl Settings {
     pub fn sanitize(&mut self) {
         self.profile.clamp();
+        self.drop_slide_ms = self.drop_slide_ms.min(DROP_SLIDE_LONG_MS);
         self.glow = if self.glow.is_finite() {
             self.glow.clamp(0.4, 1.4)
         } else {

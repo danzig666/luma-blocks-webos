@@ -260,6 +260,7 @@ impl App {
         if let Some(sess) = self.session.as_mut() {
             sess.buttons.timing = s.repeat;
             sess.buttons.bindings = s.bindings.clone();
+            sess.game.rules.drop_slide_us = s.drop_slide_ms * 1000;
         }
         self.settings_dirty = true;
     }
@@ -276,6 +277,7 @@ impl App {
         let rules = Rules {
             start_level: s.marathon_start_level,
             zen_level: s.zen_level,
+            drop_slide_us: s.drop_slide_ms * 1000,
             ..Rules::default()
         };
         let seed = if mode == Mode::Practice {
@@ -311,6 +313,7 @@ impl App {
         if let Some(sg) = self.store.save.clone() {
             let mut g = sg.game;
             g.clear_transient();
+            g.rules.drop_slide_us = self.store.settings.drop_slide_ms * 1000;
             self.session = Some(Session::new(g, &self.store));
             self.engine.reset();
             self.pause_reason = PauseReason::User;

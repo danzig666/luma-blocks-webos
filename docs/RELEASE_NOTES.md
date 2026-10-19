@@ -1,13 +1,38 @@
-# Luma Blocks 0.2.1 (test build)
+# Luma Blocks 0.2.2 (test build)
 
 A minimalist falling-block puzzle for LG webOS TVs with Magic Remote motion controls.
 
 **Pre-release.** Built, ABI-audited and smoke-tested under ARM emulation; game and gesture logic
 covered by automated tests. On-TV feedback drove this release; motion behaviour on real remotes
 still needs confirming
-([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.1/docs/TV_CHECKLIST.md)).
+([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.2/docs/TV_CHECKLIST.md)).
 
-## What changed since 0.2.0
+## What changed since 0.2.1
+
+Feedback on 0.2.1 (motion now works on the TV): circle rotation fired during sideways swings;
+swings sometimes did not move and sometimes moved too far; a dropped piece could not be nudged.
+
+* **Circle rotation no longer fires on swings.**
+  * A circle must now be roundish. A swing and its pull back draw a flat loop, which no longer
+    counts as a circle.
+  * A swing that moved the piece starts the circle count afresh.
+* **Swings move more reliably.**
+  * In the circle style, a swing that curves (as real swings do) is no longer mistaken for the
+    start of a circle. The piece now moves when the swing ends, about a tenth of a second
+    later, once it is clear that the motion was not the side of a circle.
+  * The wrist roll that comes with a forearm swing no longer blocks it in the circle style.
+  * If a swing is rejected, its pull back can no longer move the piece the other way.
+* **Swing distance is more even.** The first columns come easily (about 1.2° and 3.6°), and each
+  further column needs a little more swing, so small swings stay precise and big swings no
+  longer overshoot.
+* **Move after a drop** (new, Settings → Controls). After a drop the piece rests on the stack for
+  0.2 s before it locks. A late swing, twist or button press still slides or turns it, and it
+  drops straight down again if it slides off a ledge. A shrinking line under the piece shows
+  the time left. Choose Off, Short (0.2 s, default) or Long (0.4 s); drop again to lock at once.
+* **New test**: 400 imperfect, natural swings (curved paths, wrist roll, looping pull backs,
+  uneven speeds) give 0 rotations and 0 wrong-way moves in both rotation styles.
+
+## Earlier: 0.2.1 (since 0.2.0)
 
 Feedback on 0.2.0: the remote's motion sensor was always reported as not answering, and the
 pointer did not show.
@@ -58,13 +83,13 @@ pointer did not show.
 
 ## Downloads
 
-* `io.github.danzig666.lumablocks_0.2.1_arm.ipk`: **Luma Blocks**
-* `io.github.danzig666.lumablocks.debug_0.2.1_arm.ipk`: **Luma Blocks (Dev)**, a separate
+* `io.github.danzig666.lumablocks_0.2.2_arm.ipk`: **Luma Blocks**
+* `io.github.danzig666.lumablocks.debug_0.2.2_arm.ipk`: **Luma Blocks (Dev)**, a separate
   identity with separate saves
 * `SHA256SUMS.txt`, plus the Homebrew Channel manifest
 
 Install: Developer Mode (`ares-install`) or Homebrew Channel / Dev Manager. See
-[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.1/docs/INSTALL.md).
+[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.2/docs/INSTALL.md).
 
 **For testers:** please run Settings → Calibrate the remote first. If gestures still feel wrong,
 turn on Settings → More → Developer options, open **Input diagnostics**, record a trace with Red

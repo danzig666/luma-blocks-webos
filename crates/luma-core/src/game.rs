@@ -66,6 +66,10 @@ pub struct Rules {
     pub start_level: u32,
     /// Zen pace, as a level whose gravity is used without levelling up.
     pub zen_level: u32,
+    /// After a hard drop the piece rests on the stack this long before it locks, and may
+    /// still be slid sideways or turned (it drops straight down again). 0 = lock at once.
+    #[serde(default)]
+    pub drop_slide_us: u32,
 }
 
 impl Default for Rules {
@@ -76,6 +80,7 @@ impl Default for Rules {
             soft_drop_factor: 20,
             start_level: 1,
             zen_level: 1,
+            drop_slide_us: 0,
         }
     }
 }
@@ -164,6 +169,9 @@ pub struct Game {
     pub last_kick: usize,
     pub gravity_enabled: bool,
     pub seed: u64,
+    /// Time left in the slide after a hard drop (0 = not sliding), microseconds.
+    #[serde(default)]
+    pub slide_left_us: u64,
     #[serde(skip)]
     events: Vec<Event>,
 }
@@ -211,6 +219,7 @@ impl Game {
             last_kick: 0,
             gravity_enabled: mode != Mode::Practice,
             seed,
+            slide_left_us: 0,
             rules,
             events: Vec::new(),
         };
@@ -277,6 +286,7 @@ impl Game {
     }
 
     fn enter_piece(&mut self, kind: Kind) {
+        self.slide_left_us = 0;
         self.active = spawn_piece(kind);
         self.lock_acc_us = 0;
         self.lock_resets = 0;
@@ -316,8 +326,25 @@ impl Game {
         self.events.push(Event::ToppedOut);
     }
 
-    /// A successful move or rotation while grounded spends one lock reset.
+    /// Whether a hard-dropped piece is still sliding (movable, about to lock).
+    pub fn is_sliding(&self) -> bool {
+        self.slide_left_us > 0
+    }
+
+    /// A successful move or rotation while grounded spends one lock reset. While sliding
+    /// after a hard drop the piece drops straight down again instead and the slide time is
+    /// not extended.
     fn after_manipulation(&mut self) {
+        if self.is_sliding() {
+            let from = self.active;
+            let to = self.ghost();
+            if to.y > from.y {
+                self.active = to;
+                self.last_was_rotation = false;
+                self.events.push(Event::HardDrop { from, to });
+            }
+            return;
+        }
         if self.on_ground() && self.lock_resets < self.rules.max_lock_resets {
             self.lock_acc_us = 0;
             self.lock_resets += 1;
@@ -388,7 +415,7 @@ impl Game {
                 true
             }
             Action::Hold => {
-                if self.hold_used {
+                if self.hold_used || self.is_sliding() {
                     self.events.push(Event::Blocked);
                     return false;
                 }
@@ -407,6 +434,11 @@ impl Game {
                 true
             }
             Action::HardDrop => {
+                if self.is_sliding() {
+                    // A second drop while sliding locks at once.
+                    self.lock();
+                    return true;
+                }
                 let from = self.active;
                 let to = self.ghost();
                 let rows = (to.y - from.y).max(0) as u64;
@@ -416,7 +448,13 @@ impl Game {
                 self.active = to;
                 self.score += rows * HARD_DROP_POINTS_PER_ROW;
                 self.events.push(Event::HardDrop { from, to });
-                self.lock();
+                if self.rules.drop_slide_us > 0 {
+                    self.slide_left_us = self.rules.drop_slide_us as u64;
+                    self.fall_acc_us = 0;
+                    self.lock_acc_us = 0;
+                } else {
+                    self.lock();
+                }
                 true
             }
         }
@@ -428,6 +466,13 @@ impl Game {
             return;
         }
         self.elapsed_us += dt_us;
+        if self.is_sliding() {
+            self.slide_left_us = self.slide_left_us.saturating_sub(dt_us);
+            if self.slide_left_us == 0 {
+                self.lock();
+            }
+            return;
+        }
         if self.gravity_enabled || self.soft_drop {
             self.fall_acc_us += dt_us;
             let rt = if self.gravity_enabled {
@@ -504,6 +549,7 @@ impl Game {
     }
 
     fn lock(&mut self) {
+        self.slide_left_us = 0;
         let spin = self.spin_kind();
         let cells: Vec<(i32, i32)> = self.active.cells().collect();
         let kind = self.active.kind;
@@ -639,6 +685,65 @@ mod tests {
                 g.board[(y * COLS + x) as usize] = 1;
             }
         }
+    }
+
+    fn sliding(mode: Mode) -> Game {
+        let rules = Rules {
+            drop_slide_us: 250_000,
+            ..Rules::default()
+        };
+        Game::new(mode, rules, 1)
+    }
+
+    #[test]
+    fn hard_drop_slide_allows_a_late_move_then_locks() {
+        let mut g = sliding(Mode::Marathon);
+        set_active(&mut g, Kind::O, 0, 4, 20);
+        g.apply(Action::HardDrop);
+        assert!(g.is_sliding());
+        assert_eq!(g.pieces_placed, 0, "not locked yet");
+        let y = g.active.y;
+        g.tick(100_000);
+        assert!(g.apply(Action::MoveRight));
+        assert_eq!((g.active.x, g.active.y), (5, y), "slides along the floor");
+        g.tick(100_000);
+        assert!(g.is_sliding(), "a move does not extend the slide");
+        g.tick(60_000);
+        assert!(!g.is_sliding());
+        assert_eq!(g.pieces_placed, 1);
+        assert_eq!(g.cell(5, ROWS - 1), Kind::O.cell());
+    }
+
+    #[test]
+    fn sliding_off_a_ledge_drops_again_and_a_second_drop_locks_at_once() {
+        let mut g = sliding(Mode::Marathon);
+        // A two-cell ledge under columns 3-4; the floor is free from column 5 on.
+        fill(
+            &mut g,
+            &[(3, ROWS - 1), (4, ROWS - 1), (3, ROWS - 2), (4, ROWS - 2)],
+        );
+        set_active(&mut g, Kind::O, 0, 3, 20);
+        g.apply(Action::HardDrop);
+        let on_ledge = g.active.y;
+        g.apply(Action::MoveRight);
+        g.apply(Action::MoveRight);
+        assert!(g.active.y > on_ledge, "fell off the ledge");
+        assert!(g.is_sliding());
+        assert!(!g.apply(Action::Hold), "no hold while sliding");
+        g.apply(Action::HardDrop);
+        assert!(!g.is_sliding());
+        assert_eq!(g.pieces_placed, 1);
+    }
+
+    #[test]
+    fn old_snapshots_without_slide_fields_load() {
+        let g = empty(Mode::Marathon);
+        let mut v = serde_json::to_value(&g).unwrap();
+        v.as_object_mut().unwrap().remove("slide_left_us");
+        v["rules"].as_object_mut().unwrap().remove("drop_slide_us");
+        let back: Game = serde_json::from_value(v).unwrap();
+        assert_eq!(back.rules.drop_slide_us, 0);
+        assert!(!back.is_sliding());
     }
 
     #[test]

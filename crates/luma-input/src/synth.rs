@@ -157,6 +157,47 @@ pub mod gestures {
         v
     }
 
+    /// A sideways swing as people actually make it, with its natural imperfections. `arc`:
+    /// how far the tip rises (+) or dips (-) mid-stroke, as a fraction of `amp`. `roll`: wrist
+    /// roll that comes with the swing, degrees per degree of yaw. `pause_ms`: rest at the far
+    /// end (0 = turn straight back). `back_frac`: how much of the way the pull back returns.
+    /// `loop_gap`: the return passes on the other side of the outgoing path (fraction of
+    /// `amp`), so out-and-back draws a flat loop. `back_ms`: duration of the pull back.
+    #[allow(clippy::too_many_arguments)]
+    pub fn natural_swing(
+        s: &mut Synth,
+        dir: f32,
+        amp: f32,
+        out_ms: f32,
+        arc: f32,
+        roll: f32,
+        pause_ms: f32,
+        back_frac: f32,
+        loop_gap: f32,
+        back_ms: f32,
+    ) -> Vec<MotionSample> {
+        // The vertical deviation follows the horizontal position (a curved path), so the
+        // stroke starts and ends heading sideways like a real wrist or forearm swing.
+        let curve = |x: f32| 4.0 * x * (1.0 - x);
+        let mut v = s.motion(out_ms, |p| {
+            let x = ease(p);
+            (dir * amp * x, arc * amp * curve(x), dir * roll * amp * x)
+        });
+        if pause_ms > 0.0 {
+            v.extend(s.hold(pause_ms));
+        }
+        v.extend(s.motion(back_ms, |p| {
+            let x = ease(p);
+            (
+                -dir * amp * back_frac * x,
+                -loop_gap * amp * curve(x),
+                -dir * roll * amp * back_frac * x,
+            )
+        }));
+        v.extend(s.hold(350.0));
+        v
+    }
+
     /// Quick downward wrist flick, upward recoil, settle.
     pub fn drop(s: &mut Synth, amp: f32, ms: f32) -> Vec<MotionSample> {
         let mut v = s.motion(ms, |p| (0.0, -amp * ease(p), 0.0));

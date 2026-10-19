@@ -218,6 +218,9 @@ pub struct CircleStats {
     pub max_step_deg: f32,
     /// Longest pause inside the window, ms (one circle is one continuous stroke).
     pub max_pause_ms: f32,
+    /// Narrowest over widest spread of the points (1 = round, 0 = a line). A swing and its
+    /// pull back draw a flat loop that turns like a circle but is far from round.
+    pub axis_ratio: f32,
 }
 
 /// Rotation by drawing a compact circle with the aim point. Clockwise on screen
@@ -254,6 +257,19 @@ impl Circle {
             cy += p.y;
         }
         let c = Vec2::new(cx / n as f32, cy / n as f32);
+        let (mut sxx, mut syy, mut sxy) = (0.0f32, 0.0f32, 0.0f32);
+        for (_, p) in self.pts.iter().skip(from) {
+            let d = p.sub(c);
+            sxx += d.x * d.x;
+            syy += d.y * d.y;
+            sxy += d.x * d.y;
+        }
+        // Eigenvalues of the 2x2 covariance: the spread along the main and the minor axis.
+        let tr = sxx + syy;
+        let det = sxx * syy - sxy * sxy;
+        let disc = (tr * tr / 4.0 - det).max(0.0).sqrt();
+        let (l1, l2) = (tr / 2.0 + disc, (tr / 2.0 - disc).max(0.0));
+        let axis_ratio = if l1 > 1e-12 { (l2 / l1).sqrt() } else { 0.0 };
         let mut rsum = 0.0;
         let mut rsq = 0.0;
         let mut turn = 0.0;
@@ -304,6 +320,7 @@ impl Circle {
             min_radius_ratio: if mean > 1e-6 { rmin / mean } else { 0.0 },
             max_step_deg: max_step,
             max_pause_ms: max_pause as f32 / 1000.0,
+            axis_ratio,
         }
     }
 
@@ -353,12 +370,16 @@ impl Circle {
             if s.turn_deg.abs() > best.turn_deg.abs() && radius_ok {
                 best = s;
             }
+            // A partial arc is naturally flatter than a full circle: candidates need less
+            // roundness (just under half), commits all of it.
             if radius_ok
                 && s.turn_deg.abs() >= c.circle_candidate_turn_deg
                 && s.radius_cv <= c.circle_max_radius_cv * 1.5
+                && s.axis_ratio >= c.circle_min_axis_ratio * 0.45
             {
                 candidate = true;
                 if s.turn_deg.abs() >= c.circle_min_turn_deg
+                    && s.axis_ratio >= c.circle_min_axis_ratio
                     && s.radius_cv <= c.circle_max_radius_cv
                     && s.path_ratio <= c.circle_max_path_ratio
                     && s.duration_ms >= c.circle_min_ms
@@ -404,6 +425,22 @@ impl Circle {
 // Sideways strokes (Swing and Flick styles)
 // ------------------------------------------------------------------------------------
 
+/// Columns earned by a stroke of `travel` SH: the first at `swing_first_col` x
+/// `swing_col_sh`, the next a full `swing_col_sh` later, and every further one
+/// `swing_col_growth` longer than the one before.
+pub fn swing_columns(travel: f32, c: &Thresholds) -> i32 {
+    let col = c.swing_col_sh.max(0.005);
+    let mut need = col * c.swing_first_col;
+    let mut n = 0;
+    let mut step = col;
+    while travel >= need && n < c.swing_max_cols as i32 {
+        n += 1;
+        need += step;
+        step += col * c.swing_col_growth.max(0.0);
+    }
+    n
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StrokeMode {
     /// Swing: the stroke moves as many columns as it is long, live while it happens.
@@ -419,8 +456,10 @@ pub enum StrokeMode {
 /// into a move back; this recognizer treats it like lifting a mouse off its pad:
 /// * A stroke starts only above `swing_start_speed` with horizontal dominance and without a
 ///   wrist twist in progress, so slow drifting never moves a piece.
-/// * In `Columns` mode the piece moves one column per `swing_col_sh` of travel while the
-///   stroke is happening (the first column a little earlier), at most `swing_max_cols`.
+/// * In `Columns` mode the piece moves by [`swing_columns`] of the stroke's travel (the
+///   first column early, each further one needing a little more), at most `swing_max_cols`.
+///   Without circles the columns come live while the stroke happens; with circles they come
+///   when it ends, because only then is it clear that it was not the side of a circle.
 /// * When the stroke ends, opposite motion within `swing_return_window_ms`, up to
 ///   `swing_return_ratio` times the stroke's travel, is the return and moves nothing. The
 ///   window closes early when the remote rests or the player continues in the stroke's
@@ -447,6 +486,10 @@ pub struct Swing {
     /// Where the aim last rested: a stroke's travel is measured from here, so the slow
     /// beginning of a movement still counts.
     anchor_x: Option<f32>,
+    /// Columns earned by the current stroke but held until it ends (circle style).
+    pending: i32,
+    /// The stroke curved away at speed (part of a circle): no move and no return window.
+    turned: bool,
 }
 
 impl Swing {
@@ -467,6 +510,12 @@ impl Swing {
 
     pub fn is_stroke(&self) -> bool {
         self.phase == Phase::Candidate
+    }
+
+    /// A stroke that has already moved the piece: it is a sideways movement, not the start
+    /// of a circle.
+    pub fn is_moving_stroke(&self) -> bool {
+        self.phase == Phase::Candidate && self.moved > 0
     }
 
     fn return_active(&self, t_us: u64) -> bool {
@@ -508,9 +557,11 @@ impl Swing {
         let vy = f.vel.y;
         let speed = f.vel.len();
         let yaw_dps = vx.abs() * c.deg_per_sh;
-        let twisting = f
-            .twist_rate_dps
-            .is_some_and(|r| r.abs() > 60.0_f32.max(1.2 * yaw_dps));
+        // A wrist twist only matters when twisting rotates (not in the circle style, where
+        // the roll that naturally comes with a forearm swing must not block it).
+        let twisting = !strict
+            && f.twist_rate_dps
+                .is_some_and(|r| r.abs() > 60.0_f32.max(1.2 * yaw_dps));
 
         if self.phase != Phase::Candidate && (speed < c.swing_stop_speed || self.anchor_x.is_none()) {
             self.anchor_x = Some(f.aim.x);
@@ -555,6 +606,8 @@ impl Swing {
                     self.max_dev = 0.0;
                     self.peak = vx.abs();
                     self.ret_budget = 0.0;
+                    self.pending = 0;
+                    self.turned = false;
                 }
             }
             Phase::Candidate => {
@@ -574,28 +627,52 @@ impl Swing {
                         self.confirmed = true;
                     }
                 }
+                let along = vx * self.dir;
+                self.peak = self.peak.max(along);
+                // A swing slows down before it stops or turns back; the side of a circle keeps
+                // its speed and curves away.
+                if strict
+                    && along < c.swing_stop_speed
+                    && speed > 0.5 * self.peak
+                    && vy.abs() > (0.75 * c.swing_start_speed).max(1.5 * vx.abs())
+                {
+                    self.turned = true;
+                    self.phase = Phase::Disarmed;
+                    return out;
+                }
                 if blocked || (twisting && self.moved == 0) {
+                    // A held stroke that has already stopped going sideways was a swing: the
+                    // loop of its pull back may look like the start of a circle.
+                    if strict && self.pending > 0 && vx * self.dir < c.swing_stop_speed {
+                        while self.moved < self.pending {
+                            self.moved += 1;
+                            out.push(self.commit(f.t_us));
+                        }
+                        self.end_stroke(f.t_us, c);
+                        return out;
+                    }
                     self.cancel(f.t_us, c);
                     return out;
                 }
+                // With circles enabled, the stroke's columns are held until it ends: only then
+                // is it clear whether it was a sideways swing (it stops or turns back) or the
+                // side of a circle (it curves away at speed).
+                let deferred = strict;
                 if self.confirmed && self.mode == StrokeMode::Columns {
-                    let col = c.swing_col_sh.max(0.005);
-                    let first = col * c.swing_first_col;
-                    let target = if self.travel < first {
-                        0
+                    let target = swing_columns(self.travel, c);
+                    if deferred {
+                        self.pending = self.pending.max(target);
                     } else {
-                        (1 + ((self.travel - first) / col) as i32).min(c.swing_max_cols as i32)
-                    };
-                    while self.moved < target {
-                        self.moved += 1;
-                        out.push(self.commit(f.t_us));
+                        while self.moved < target {
+                            self.moved += 1;
+                            out.push(self.commit(f.t_us));
+                        }
                     }
                 }
-                let along = vx * self.dir;
-                self.peak = self.peak.max(along);
                 // Flick: one column as soon as the stroke is clearly past its peak, before any
                 // recoil begins.
                 if self.mode == StrokeMode::Single
+                    && !deferred
                     && self.moved == 0
                     && self.confirmed
                     && self.travel >= c.flick_min_travel_sh
@@ -615,6 +692,12 @@ impl Swing {
                         .slow_since
                         .is_some_and(|s0| (f.t_us - s0) as f32 / 1000.0 >= c.swing_end_ms);
                 if ended {
+                    if deferred && self.confirmed && self.mode == StrokeMode::Columns {
+                        while self.moved < self.pending {
+                            self.moved += 1;
+                            out.push(self.commit(f.t_us));
+                        }
+                    }
                     if self.mode == StrokeMode::Single
                         && self.moved == 0
                         && self.confirmed
@@ -627,12 +710,19 @@ impl Swing {
                 }
             }
             Phase::Disarmed => {
+                // A rejected stroke still has a pull back: keep measuring how far it went so
+                // the return can be ignored like any other.
+                self.travel = self.travel.max((f.aim.x - self.origin_x) * self.dir);
                 if speed < c.rearm_speed {
-                    self.phase = if self.return_active(f.t_us) {
-                        Phase::Latched
+                    if self.travel > 0.02 && !self.turned && !self.return_active(f.t_us) {
+                        self.end_stroke(f.t_us, c);
                     } else {
-                        Phase::Idle
-                    };
+                        self.phase = if self.return_active(f.t_us) {
+                            Phase::Latched
+                        } else {
+                            Phase::Idle
+                        };
+                    }
                 }
             }
         }

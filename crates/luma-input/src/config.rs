@@ -57,6 +57,9 @@ pub struct Thresholds {
     pub circle_max_ms: f32,
     /// Max path length relative to an ideal arc of the same turning (scribble rejection).
     pub circle_max_path_ratio: f32,
+    /// Min roundness: narrowest over widest spread of the drawn points (1 = round). Keeps
+    /// the flat loop of a swing and its pull back from counting as a circle.
+    pub circle_min_axis_ratio: f32,
 
     // --- Sideways strokes (Swing and Flick styles) -----------------------------------
     // A stroke is a quick, horizontally dominant movement of the aim. The pull that brings
@@ -72,6 +75,9 @@ pub struct Thresholds {
     /// Aim travel per column in Swing style, SH (the first column needs `swing_first_col` of it).
     pub swing_col_sh: f32,
     pub swing_first_col: f32,
+    /// Each further column needs this much more travel than the one before (fraction of
+    /// `swing_col_sh`): small swings stay precise, big ones still cross the board.
+    pub swing_col_growth: f32,
     /// Most columns one stroke may move.
     pub swing_max_cols: f32,
     /// Opposite motion within this time after a stroke counts as the return, ms...
@@ -150,6 +156,7 @@ impl Default for Thresholds {
             circle_min_ms: 200.0,
             circle_max_ms: 1400.0,
             circle_max_path_ratio: 1.9,
+            circle_min_axis_ratio: 0.45,
 
             swing_start_speed: 0.8,
             swing_stop_speed: 0.3,
@@ -157,6 +164,7 @@ impl Default for Thresholds {
             swing_dominance: 1.3,
             swing_col_sh: 0.10,
             swing_first_col: 0.5,
+            swing_col_growth: 0.15,
             swing_max_cols: 9.0,
             swing_return_window_ms: 1100.0,
             swing_return_ratio: 1.6,

@@ -47,11 +47,18 @@ pure crates and runs on any desktop.
     rotation. The latch releases only after returning within the re-arm angle. Holding a new
     posture re-bases it, and a later return to the old pose is recognized as a return, not an
     opposite rotation.
-  * *Circle*: signed turning around the window centroid, with radius, roundness, path-length,
-    duration and continuity checks. Lines, L-shapes, scribbles and partial arcs are rejected.
+  * *Circle*: signed turning around the window centroid, with radius, radius variation,
+    path-length, duration and continuity checks, plus **roundness** (minor over major spread of
+    the points, `circle_min_axis_ratio`; a partial arc needs a little under half of it to become
+    a candidate). Lines, L-shapes, scribbles, partial arcs and the flat loop of a swing with its
+    pull back are rejected.
   * *Swing / Flick* (`Swing`): a quick, horizontally dominant stroke measured from where the
-    movement began. Swing moves one column per `swing_col_sh` of travel while the stroke happens;
-    Flick moves one column per stroke. When the stroke ends, opposite motion within a window and
+    movement began. Swing moves by `swing_columns` of the travel (the first column early, each
+    further one `swing_col_growth` wider); Flick moves one column per stroke. Without circles the
+    columns come live; with circles they are held until the stroke ends and dropped if it
+    curves away at speed (the side of a circle keeps its speed, a swing slows down before it
+    stops or turns back). A rejected stroke still opens a return window, so its pull back
+    never moves the piece the other way. When the stroke ends, opposite motion within a window and
     up to 1.6× the stroke's travel is the **return pull** and moves nothing; the window closes
     early when the remote rests or the player continues in the same direction. Slow motion never
     starts a stroke. This replaces absolute pointing as the default because players naturally pull
@@ -60,7 +67,9 @@ pure crates and runs on any desktop.
     duration. After a commit it stays latched across piece spawns until a minimum time has
     passed *and* the remote has been still.
 * **Arbitration** (`engine.rs`):
-  * A circle candidate owns the trajectory and blocks swings and drops.
+  * A circle candidate owns the trajectory and blocks drops. It does not block a held swing
+    stroke (a curved swing looks like the start of a circle); a stroke that moved the piece
+    restarts the circle window, so a swing's out-and-back loop never adds up to a turn.
   * A twist candidate blocks drops. Any candidate or recent commit freezes pointing, and pointing
     re-anchors without a jump.
   * Only one discrete action is accepted per trajectory.
