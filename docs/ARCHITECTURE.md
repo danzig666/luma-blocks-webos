@@ -18,7 +18,7 @@ pure crates and runs on any desktop.
  ───────────            ─────────────        ──────             ───────────           ───────────       ────
  mrcu worker thread ──► mrcu::parse_* ──┐                      Twist   (twist°)
  (Luna, sensor2 or      MotionSample   ├─► AimTracker ──► Frame ─► Circle  (aim xy)  ─► GestureEngine ─► Action
-  legacy)               (rad/s, m/s²,  │   calibrated       Flick   (aim vx)          ownership,        (engine)
+  legacy)               (rad/s, m/s²,  │   calibrated       Swing   (aim vx)          ownership,        (engine)
  simulator / trace ─────► quat w,x,y,z) │   aim (screen      Drop    (aim vy)          guards, re-arm,
  SDL pointer ───────────────────────────┘   heights), twist   pointing column ──────► target column ─► legal moves
  SDL keys ─► keys::poll ─► ButtonMapper (DAS/ARR, dedupe, long press) ──────────────────────────────► Action
@@ -31,7 +31,11 @@ pure crates and runs on any desktop.
   monotonic arrival timestamps and explicit units. Missing fields stay `None` and implausible
   values are dropped, never zeroed. Errors are classified: unsupported, permission denied,
   asleep, duplicate subscription, too many clients, bad interval, malformed.
-* **Frames**: the orientation relative to the calibrated neutral pose is projected to yaw and
+* **Frames**: motion comes from the **gyroscope** whenever it is delivered (a direct
+  body-frame rate with documented axes); its units are cross-checked against the orientation at
+  runtime (rad/s per LG, deg/s detected automatically). Short-term aim is integrated from the gyro
+  with a slow leak. For the Pointing style, absolute aim comes from the orientation relative to
+  the calibrated neutral pose, projected to yaw and
   pitch. A swing-twist decomposition gives the twist about the calibrated long axis, sign-safe
   and wrap-safe. Aim is expressed in *screen heights* (SH), so pointer pixels and sensor angles
   share one threshold scale. Velocity is timestamp-aware with light exponential smoothing.
@@ -45,19 +49,27 @@ pure crates and runs on any desktop.
     opposite rotation.
   * *Circle*: signed turning around the window centroid, with radius, roundness, path-length,
     duration and continuity checks. Lines, L-shapes, scribbles and partial arcs are rejected.
-  * *Flick*: a short, horizontally dominant burst moves one column. Recoil in the opposite
-    direction is ignored, and a burst must calm down before the next flick counts.
+  * *Swing / Flick* (`Swing`): a quick, horizontally dominant stroke measured from where the
+    movement began. Swing moves one column per `swing_col_sh` of travel while the stroke happens;
+    Flick moves one column per stroke. When the stroke ends, opposite motion within a window and
+    up to 1.6× the stroke's travel is the **return pull** and moves nothing; the window closes
+    early when the remote rests or the player continues in the same direction. Slow motion never
+    starts a stroke. This replaces absolute pointing as the default because players naturally pull
+    the remote back after moving it.
   * *Drop*: a high peak speed, a straight-down heading throughout, minimum travel and a short
     duration. After a commit it stays latched across piece spawns until a minimum time has
     passed *and* the remote has been still.
 * **Arbitration** (`engine.rs`):
-  * A circle candidate owns the trajectory and blocks flicks and drops.
+  * A circle candidate owns the trajectory and blocks swings and drops.
   * A twist candidate blocks drops. Any candidate or recent commit freezes pointing, and pointing
     re-anchors without a jump.
   * Only one discrete action is accepted per trajectory.
   * A button press cancels candidates and adds a short guard against press jiggle.
   * After `reset()` (pause, resume, focus change, remote wake or reconnection) nothing commits
     until the remote has been still.
+* **Calibration** probes measure the rotation axis of each guided motion from the integrated
+  gyro at its largest excursion (so out-and-back motions read correctly), and the try-it step
+  can flip the twist, sideways and drop directions individually.
 * **Pointing** anchor convention: the aim selects the **horizontal centre of the piece's
   occupied cells**. Column hysteresis prevents flicker. The piece moves only through legal
   one-column moves, and the ghost shows the actual reachable placement. A small target marker

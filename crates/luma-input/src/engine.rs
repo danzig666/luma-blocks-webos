@@ -4,9 +4,10 @@
 //! samples.
 //!
 //! Ownership rules:
-//! * A circle candidate owns the trajectory: no flick or drop commits and pointing is frozen.
+//! * A circle candidate owns the trajectory: no stroke or drop commits and pointing is frozen.
 //! * A twist candidate freezes pointing and blocks drops.
-//! * A drop candidate blocks flicks and freezes pointing.
+//! * A drop candidate blocks sideways strokes and freezes pointing.
+//! * After a sideways stroke, the pull back is a return, not a move (see `Swing`).
 //! * After any commit, the other recognizers' in-flight candidates are cancelled, so one
 //!   trajectory yields at most one discrete action; pointing stays frozen briefly.
 //! * A button press cancels candidates and suppresses commits for `button_guard_ms` (the
@@ -18,7 +19,7 @@ use crate::calib::{AimSource, Calibration, PointRange};
 use crate::config::{effective, HorizontalStyle, Profile, RotationStyle, Thresholds};
 use crate::frame::{AimTracker, Frame};
 use crate::math::Vec2;
-use crate::recognize::{Circle, Commit, Drop, Flick, Gesture, Phase, Twist};
+use crate::recognize::{Circle, Commit, Drop, Gesture, Phase, StrokeMode, Swing, Twist};
 use crate::sample::MotionSample;
 use std::collections::VecDeque;
 
@@ -42,7 +43,7 @@ pub struct GestureEngine {
     pointer: AimTracker,
     pub twist: Twist,
     pub circle: Circle,
-    pub flick: Flick,
+    pub swing: Swing,
     pub drop: Drop,
     armed: bool,
     still_since: Option<u64>,
@@ -57,6 +58,7 @@ pub struct GestureEngine {
     held_column: Option<f32>,
     suspended_at: Option<f32>,
     out: Vec<Commit>,
+    probe: Option<crate::calib::Probe>,
     pub debug: Debug,
     /// When false, frames update diagnostics but no gesture commits (Buttons control mode).
     pub enabled: bool,
@@ -76,7 +78,7 @@ impl GestureEngine {
             pointer: AimTracker::default(),
             twist: Twist::default(),
             circle: Circle::default(),
-            flick: Flick::default(),
+            swing: Swing::default(),
             drop: Drop::default(),
             armed: false,
             still_since: None,
@@ -91,6 +93,7 @@ impl GestureEngine {
             held_column: None,
             suspended_at: None,
             out: Vec::new(),
+            probe: None,
             debug: Debug::default(),
             enabled: true,
         }
@@ -112,7 +115,7 @@ impl GestureEngine {
     fn reset_recognizers(&mut self) {
         self.twist.reset();
         self.circle.reset();
-        self.flick.reset();
+        self.swing.reset();
         self.drop.reset();
     }
 
@@ -162,17 +165,56 @@ impl GestureEngine {
         self.guard_until = t_us + (self.cfg.button_guard_ms * 1000.0) as u64;
         self.twist.cancel();
         self.circle.cancel();
-        self.flick.cancel();
+        let c = self.eff.clone();
+        self.swing.cancel(t_us, &c);
         self.drop.cancel();
     }
 
     /// Arrow buttons override pointing until a deliberate new pointing movement.
     pub fn suspend_pointing(&mut self) {
-        self.suspended_at = Some(self.debug.last_frame.aim.x);
+        self.suspended_at = Some(self.smoothed_x.unwrap_or(self.debug.last_frame.aim.x));
         self.held_column = None;
     }
 
+    /// Start measuring one guided calibration motion (see `calib::Probe`).
+    pub fn start_probe(&mut self) {
+        self.probe = Some(crate::calib::Probe::default());
+    }
+
+    pub fn probe(&self) -> Option<&crate::calib::Probe> {
+        self.probe.as_ref()
+    }
+
+    pub fn stop_probe(&mut self) -> Option<crate::calib::Probe> {
+        self.probe.take()
+    }
+
+    /// Delivered gyro units in degrees per second per unit, and whether that was confirmed.
+    pub fn gyro_units(&self) -> (f32, bool) {
+        (
+            if self.sensor.gyro_to_dps > 0.0 {
+                self.sensor.gyro_to_dps
+            } else {
+                crate::frame::RAD_TO_DEG
+            },
+            self.sensor.gyro_units_checked,
+        )
+    }
+
     pub fn motion(&mut self, s: &MotionSample) {
+        if let Some(p) = self.probe.as_mut() {
+            let dt = self
+                .last_motion_us
+                .filter(|l| s.t_us > *l)
+                .map(|l| ((s.t_us - l) as f32 / 1e6).min(0.1))
+                .unwrap_or(0.0);
+            let scale = if self.sensor.gyro_to_dps > 0.0 {
+                self.sensor.gyro_to_dps
+            } else {
+                crate::frame::RAD_TO_DEG
+            };
+            p.push(s.gyro.map(|g| g.scale(scale)), s.quat, dt);
+        }
         if let Some(q) = s.quat {
             self.last_quat = Some(q);
         }
@@ -256,7 +298,6 @@ impl GestureEngine {
             }
         }
         self.debug.armed = true;
-        let guarded = f.t_us < self.guard_until;
         let circles = self.profile.rotation == RotationStyle::Circle;
         let mut commits: Vec<Commit> = Vec::new();
 
@@ -282,53 +323,44 @@ impl GestureEngine {
                 commits.push(cm);
             }
         }
-        if self.profile.horizontal == HorizontalStyle::Flick {
-            let fl = self.flick.update(&f, &c, circles);
-            if let Some(cm) = fl {
-                if self.circle.is_candidate()
-                    || self.drop.is_candidate()
-                    || self.twist.phase == Phase::Candidate
-                {
-                    self.suppress(f.t_us, cm.gesture, "flick during another gesture");
-                } else {
-                    commits.push(cm);
-                }
-            }
+        // Sideways strokes: several column moves may come from one stroke.
+        let mut moves: Vec<Commit> = Vec::new();
+        if self.profile.horizontal != HorizontalStyle::Pointing {
+            self.swing.mode = if self.profile.horizontal == HorizontalStyle::Flick {
+                StrokeMode::Single
+            } else {
+                StrokeMode::Columns
+            };
+            let settling = f.t_us < self.freeze_until || self.circle.phase == Phase::Latched;
+            let blocked = rotating || self.drop.is_candidate() || !commits.is_empty() || settling;
+            moves = self.swing.update(&f, &c, circles, blocked);
         }
 
-        // One discrete action per trajectory: keep the first (rotation, then drop, then flick).
+        // One discrete action per trajectory: rotation, then drop; strokes yield to both.
         if let Some(first) = commits.first().copied() {
-            for other in commits.iter().skip(1) {
+            for other in commits.iter().skip(1).chain(moves.iter()) {
                 self.suppress(f.t_us, other.gesture, "conflict on one trajectory");
             }
-            let accepted = if guarded {
-                self.suppress(f.t_us, first.gesture, "button guard");
-                false
-            } else if !self.enabled {
-                self.suppress(f.t_us, first.gesture, "motion control off");
-                false
+            moves.clear();
+            if first.gesture.is_rotation() {
+                self.last_rotate_us = f.t_us;
+                self.drop.cancel();
+                self.swing.cancel(f.t_us, &c);
             } else {
-                true
-            };
-            match first.gesture {
-                g if g.is_rotation() => {
-                    self.last_rotate_us = f.t_us;
-                    self.drop.cancel();
-                    self.flick.cancel();
-                }
-                Gesture::HardDrop => {
-                    self.flick.cancel();
-                    self.circle.cancel();
-                    self.twist.cancel();
-                }
-                _ => {}
+                self.swing.cancel(f.t_us, &c);
+                self.circle.cancel();
+                self.twist.cancel();
             }
-            if first.gesture.is_rotation() || first.gesture == Gesture::HardDrop {
-                self.freeze_until = f.t_us + (c.post_commit_freeze_ms * 1000.0) as u64;
-            }
-            if accepted {
-                self.out.push(first);
-                self.debug.recent.push_back(first);
+            self.freeze_until = f.t_us + (c.post_commit_freeze_ms * 1000.0) as u64;
+        }
+        for cm in commits.into_iter().take(1).chain(moves) {
+            if f.t_us < self.guard_until {
+                self.suppress(f.t_us, cm.gesture, "button guard");
+            } else if !self.enabled {
+                self.suppress(f.t_us, cm.gesture, "motion control off");
+            } else {
+                self.out.push(cm);
+                self.debug.recent.push_back(cm);
                 while self.debug.recent.len() > RECENT {
                     self.debug.recent.pop_front();
                 }
@@ -356,9 +388,10 @@ impl GestureEngine {
             return;
         }
         let tau = self.cfg.point_smoothing_ms / 1000.0;
+        let ax = f.abs.unwrap_or(f.aim).x;
         let x = match self.smoothed_x {
-            Some(s) if f.dt_s > 0.0 && !f.gap => s + (f.aim.x - s) * (f.dt_s / (tau + f.dt_s)),
-            _ => f.aim.x,
+            Some(s) if f.dt_s > 0.0 && !f.gap => s + (ax - s) * (f.dt_s / (tau + f.dt_s)),
+            _ => ax,
         };
         self.smoothed_x = Some(x);
     }

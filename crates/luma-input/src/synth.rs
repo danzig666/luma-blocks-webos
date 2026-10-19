@@ -147,6 +147,16 @@ pub mod gestures {
         v
     }
 
+    /// Sideways swing of `amp` degrees, a short pause, then the natural pull back to where
+    /// it started (at `back_speed` times the outgoing speed), then rest.
+    pub fn swing(s: &mut Synth, dir: f32, amp: f32, out_ms: f32, back_speed: f32) -> Vec<MotionSample> {
+        let mut v = s.motion(out_ms, |p| (dir * amp * ease(p), 0.0, 0.0));
+        v.extend(s.hold(120.0));
+        v.extend(s.motion(out_ms / back_speed.max(0.1), |p| (-dir * amp * ease(p), 0.0, 0.0)));
+        v.extend(s.hold(300.0));
+        v
+    }
+
     /// Quick downward wrist flick, upward recoil, settle.
     pub fn drop(s: &mut Synth, amp: f32, ms: f32) -> Vec<MotionSample> {
         let mut v = s.motion(ms, |p| (0.0, -amp * ease(p), 0.0));

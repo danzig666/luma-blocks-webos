@@ -75,8 +75,12 @@ pub const ROTATION: &str = "Rotate by";
 pub const ROT_TWIST: &str = "Twisting the wrist";
 pub const ROT_CIRCLE: &str = "Drawing a circle";
 pub const SIDEWAYS: &str = "Move sideways by";
+pub const SIDE_SWING: &str = "Swinging";
 pub const SIDE_POINT: &str = "Pointing";
 pub const SIDE_FLICK: &str = "Flicking";
+pub const SIDE_SWING_HINT: &str = "Pulling back is ignored";
+pub const SIDE_POINT_HINT: &str = "The piece follows where you point";
+pub const SIDE_FLICK_HINT: &str = "One column per flick";
 pub const DROP_GESTURE: &str = "Drop with a downward flick";
 pub const SENS_SIDE: &str = "Sideways sensitivity";
 pub const SENS_ROT: &str = "Rotation sensitivity";
@@ -123,16 +127,40 @@ pub const TRY_DROP: &str = "Drop it with a quick downward flick";
 pub const START_PLAYING: &str = "Start playing";
 
 // Calibration
-pub const CAL_TITLE: &str = "Calibration";
-pub const CAL_NEUTRAL: &str =
-    "Sit comfortably and point at the middle of the screen. Hold still for a moment.";
-pub const CAL_TWIST: &str = "Twist your wrist clockwise, like turning a key, then back.";
-pub const CAL_TILT: &str = "Tip the end of the remote up, then back to the middle.";
-pub const CAL_LEFT: &str = "Point at the left edge of the board and press OK.";
-pub const CAL_RIGHT: &str = "Point at the right edge of the board and press OK.";
-pub const CAL_DONE: &str = "All set.";
-pub const CAL_RETRY: &str = "That was hard to read. Please try once more.";
-pub const CAL_SKIP_HINT: &str = "Back skips this step";
+pub const CAL_TITLE: &str = "Set up motion";
+pub const CAL_STEP: &str = "Step";
+pub const CAL_HOLD_T: &str = "Hold it like you play";
+pub const CAL_HOLD: &str = "Sit comfortably and point the remote at the screen. Keep it still for a moment.";
+pub const CAL_HOLD_LIVE: &str = "Keep still";
+pub const CAL_TWIST_T: &str = "Twist to the right";
+pub const CAL_TWIST: &str =
+    "Turn your wrist to the right, like turning a key, then back. This is how you rotate pieces.";
+pub const CAL_SWING_T: &str = "Swing to the right";
+pub const CAL_SWING: &str =
+    "Swing the remote quickly to the right, then back. This is how you move pieces sideways.";
+pub const CAL_LEFT_T: &str = "Left edge";
+pub const CAL_LEFT: &str = "Move the dot onto the left edge of the board and press OK.";
+pub const CAL_RIGHT_T: &str = "Right edge";
+pub const CAL_RIGHT: &str = "Now move the dot onto the right edge and press OK.";
+pub const CAL_TRY_T: &str = "Try it";
+pub const CAL_TRY: &str =
+    "Play with the piece. If anything goes the wrong way, flip it with a colour button.";
+pub const CAL_GOT_IT: &str = "Got it";
+pub const CAL_RETRY: &str = "That was hard to read. Please try once more, a little bigger.";
+pub const CAL_TWISTED: &str = "That looked like a twist. Swing sideways instead, like turning your head.";
+pub const CAL_NO_SENSOR: &str =
+    "The remote's motion sensor is not answering. Move the remote to wake it, or press Back to skip.";
+pub const CAL_KEYS_MEASURE: &str = "OK  skip this step      Back  cancel";
+pub const CAL_KEYS_EDGE: &str = "OK  set      Back  cancel";
+pub const CAL_DONE_BTN: &str = "OK  done";
+pub const CAL_FLIP_TWIST: &str = "Red  rotation reversed";
+pub const CAL_FLIP_SIDE: &str = "Green  sideways reversed";
+pub const CAL_FLIP_DROP: &str = "Yellow  drop reversed";
+pub const CAL_REDO: &str = "Back  start over";
+pub const CAL_FLIPPED: &str = "Flipped";
+pub const TRY_MOVE: &str = "Move sideways";
+pub const TRY_ROT: &str = "Rotate";
+pub const TRY_DROP_SHORT: &str = "Drop";
 
 // Records
 pub const NO_RECORDS: &str = "No records yet.";

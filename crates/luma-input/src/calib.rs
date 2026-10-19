@@ -70,6 +70,9 @@ pub struct Calibration {
     pub twist_sign: f32,
     /// Whether the axes above were measured by the guided steps (vs documented defaults).
     pub axes_measured: bool,
+    /// Player overrides from the calibration test ("feels reversed"): +1 or -1.
+    pub yaw_sign: f32,
+    pub pitch_sign: f32,
     pub sensor_range: Option<PointRange>,
     pub pointer_range: Option<PointRange>,
 }
@@ -85,6 +88,8 @@ impl Default for Calibration {
             // clockwise to that viewer.
             twist_sign: 1.0,
             axes_measured: false,
+            yaw_sign: 1.0,
+            pitch_sign: 1.0,
             sensor_range: None,
             pointer_range: None,
         }
@@ -106,8 +111,10 @@ impl Calibration {
             self.twist_sign = d.twist_sign;
             self.axes_measured = false;
         }
-        if self.twist_sign != 1.0 && self.twist_sign != -1.0 {
-            self.twist_sign = 1.0;
+        for s in [&mut self.twist_sign, &mut self.yaw_sign, &mut self.pitch_sign] {
+            if *s != 1.0 && *s != -1.0 {
+                *s = 1.0;
+            }
         }
         if let Some(q) = self.neutral {
             if !q.is_finite() || (q.len() - 1.0).abs() > 0.1 {
@@ -146,8 +153,12 @@ impl AxisProbe {
     /// Signed dominant body axis of the rotation, if the motion was large and clean enough:
     /// at least 25 degrees, with at least 75% of it about a single body axis.
     pub fn axis(&self) -> Option<Vec3> {
+        self.axis_min(25.0)
+    }
+
+    pub fn axis_min(&self, min_deg: f32) -> Option<Vec3> {
         let (q, ang) = self.best?;
-        if ang.to_degrees() < 25.0 {
+        if ang.to_degrees() < min_deg {
             return None;
         }
         let (axis, _) = self.start?.relative_to(q).axis_angle();
@@ -157,6 +168,74 @@ impl AxisProbe {
         }
         Some(d)
     }
+}
+
+/// One guided calibration motion, measured from the gyroscope when available (a body-frame
+/// rate, independent of the orientation's reference convention) and from the orientation
+/// otherwise. The rotation axis is taken at the moment of largest excursion, so an
+/// out-and-back motion still reads correctly.
+#[derive(Debug, Clone, Default)]
+pub struct Probe {
+    acc: Vec3,
+    best: Vec3,
+    quat: AxisProbe,
+    gyro_seen: bool,
+}
+
+impl Probe {
+    /// `gyro_dps`: body rates in degrees per second.
+    pub fn push(&mut self, gyro_dps: Option<Vec3>, quat: Option<Quat>, dt: f32) {
+        if let Some(g) = gyro_dps {
+            self.gyro_seen = true;
+            self.acc = self.acc.add(g.scale(dt));
+            if self.acc.len() > self.best.len() {
+                self.best = self.acc;
+            }
+        }
+        if let Some(q) = quat {
+            self.quat.push(q);
+        }
+    }
+    /// Largest rotation reached so far, degrees.
+    pub fn angle_deg(&self) -> f32 {
+        if self.gyro_seen {
+            self.best.len()
+        } else {
+            self.quat.angle_deg()
+        }
+    }
+    /// Current excursion along the best axis, degrees (falls back as the motion returns).
+    pub fn current_deg(&self) -> f32 {
+        if self.gyro_seen && self.best.len() > 1e-3 {
+            self.acc.dot(self.best.norm())
+        } else {
+            self.quat.angle_deg()
+        }
+    }
+    /// Signed dominant body axis, if the motion was at least `min_deg` and clean (>= 75%
+    /// about one axis).
+    pub fn axis(&self, min_deg: f32) -> Option<Vec3> {
+        if !self.gyro_seen {
+            return self.quat.axis_min(min_deg);
+        }
+        if self.best.len() < min_deg {
+            return None;
+        }
+        let a = self.best.norm();
+        let d = a.dominant_axis();
+        (a.dot(d) >= 0.75).then_some(d)
+    }
+}
+
+/// Apply the "swing right" step: swinging right is a negative rotation about the up axis
+/// (right-hand rule), so up = -measured axis. Rejected if the player twisted instead.
+pub fn apply_swing_probe(c: &mut Calibration, signed_axis: Vec3) -> bool {
+    if signed_axis.dot(c.long_axis).abs() > 0.5 {
+        return false;
+    }
+    c.up_axis = signed_axis.scale(-1.0).dominant_axis();
+    c.axes_measured = true;
+    true
 }
 
 /// Apply the "twist clockwise" step: the dominant axis is the long axis, and its sign says
@@ -203,6 +282,34 @@ mod tests {
         }
         assert!(apply_pitch_probe(&mut c, p.axis().unwrap()));
         assert_eq!(c.up_axis, Vec3::Z);
+    }
+
+    #[test]
+    fn gyro_probe_finds_twist_and_swing_axes() {
+        let mut c = Calibration::default();
+        // Clockwise twist (+Y at 200 dps for 0.2 s) and back.
+        let mut p = Probe::default();
+        for i in 0..40 {
+            let w = if i < 20 { 200.0 } else { -200.0 };
+            p.push(Some(Vec3::new(3.0, w, -4.0)), None, 0.01);
+        }
+        assert!(p.angle_deg() > 35.0);
+        apply_twist_probe(&mut c, p.axis(25.0).unwrap());
+        assert_eq!(c.long_axis, Vec3::Y);
+        assert_eq!(c.twist_sign, 1.0);
+        // Swing right: negative rotation about +Z (up).
+        let mut p = Probe::default();
+        for _ in 0..20 {
+            p.push(Some(Vec3::new(0.0, 5.0, -180.0)), None, 0.01);
+        }
+        assert!(apply_swing_probe(&mut c, p.axis(6.0).unwrap()));
+        assert_eq!(c.up_axis, Vec3::Z);
+        // A twist during the swing step is rejected.
+        let mut p = Probe::default();
+        for _ in 0..20 {
+            p.push(Some(Vec3::new(0.0, 180.0, 0.0)), None, 0.01);
+        }
+        assert!(!apply_swing_probe(&mut c, p.axis(6.0).unwrap()));
     }
 
     #[test]

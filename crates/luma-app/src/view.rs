@@ -53,6 +53,8 @@ struct Trail {
 }
 struct ClearFx {
     rows: Vec<i32>,
+    /// Cell values of each cleared row just before it was removed (for the dissolve).
+    cells: Vec<Vec<u8>>,
     t0: u64,
     big: bool,
 }
@@ -83,6 +85,21 @@ pub struct Fx {
     flashes: Vec<Flash>,
     rot_pulse: Option<u64>,
     rng: u64,
+    // Active piece animation (visual only; the simulation stays on the grid).
+    vis: Option<(f32, f32)>,
+    rot_anim: Option<(u64, f32)>,
+    spawn_t0: u64,
+    last_now: u64,
+    // Board snapshot from the previous frame plus the cells of the piece that just locked,
+    // so cleared rows can dissolve even though the engine removed them instantly.
+    last_board: Vec<u8>,
+    pending_lock: Vec<(i32, i32, u8)>,
+    queue_t0: u64,
+    hold_t0: u64,
+    level_t0: u64,
+    over_t0: Option<u64>,
+    impacts: Vec<(f32, f32, Color, u64)>,
+    score_shown: f64,
 }
 
 fn age_ms(now: u64, t0: u64) -> f32 {
@@ -100,8 +117,47 @@ impl Fx {
 
     pub fn on_event(&mut self, e: &Event, now: u64, look: &Look) {
         match e {
-            Event::Rotated { .. } => self.rot_pulse = Some(now),
+            Event::Rotated { cw, .. } => {
+                self.rot_pulse = Some(now);
+                if !look.reduced_motion {
+                    self.rot_anim = Some((now, if *cw { -90.0 } else { 90.0 }));
+                }
+            }
+            Event::Spawned => {
+                self.vis = None;
+                self.rot_anim = None;
+                self.spawn_t0 = now;
+                self.queue_t0 = now;
+            }
+            Event::Held => {
+                self.vis = None;
+                self.hold_t0 = now;
+            }
+            Event::ToppedOut => self.over_t0 = Some(now),
             Event::HardDrop { from, to } => {
+                self.vis = None;
+                self.rot_anim = None;
+                if !look.reduced_motion {
+                    // A little dust where the piece lands.
+                    let mut bottoms: Vec<(i32, i32)> = Vec::new();
+                    for (x, y) in to.cells() {
+                        match bottoms.iter_mut().find(|b| b.0 == x) {
+                            Some(b) => b.1 = b.1.max(y),
+                            None => bottoms.push((x, y)),
+                        }
+                    }
+                    for (x, y) in bottoms {
+                        if y >= HIDDEN_ROWS {
+                            let r = cell_rect(x, y);
+                            self.impacts.push((
+                                r.center().x() as f32,
+                                r.bottom() as f32,
+                                colour(to.kind),
+                                now,
+                            ));
+                        }
+                    }
+                }
                 if to.y > from.y && !look.reduced_motion {
                     let mut cols: Vec<(i32, i32, i32)> = Vec::new();
                     for (x, y) in from.cells() {
@@ -124,11 +180,27 @@ impl Fx {
             }
             Event::Locked { cells, kind } => {
                 self.flashes.push((cells.clone(), colour(*kind), now));
+                self.pending_lock = cells.iter().map(|&(x, y)| (x, y, kind.cell())).collect();
             }
             Event::Cleared { rows, score } => {
                 let big = score.lines >= 4 || score.spin != luma_core::scoring::Spin::None;
+                let cells = rows
+                    .iter()
+                    .map(|&r| {
+                        let mut row: Vec<u8> = (0..COLS)
+                            .map(|x| self.last_board.get((r * COLS + x) as usize).copied().unwrap_or(0))
+                            .collect();
+                        for &(x, y, c) in &self.pending_lock {
+                            if y == r && (0..COLS).contains(&x) {
+                                row[x as usize] = c;
+                            }
+                        }
+                        row
+                    })
+                    .collect();
                 self.clears.push(ClearFx {
                     rows: rows.clone(),
+                    cells,
                     t0: now,
                     big,
                 });
@@ -182,11 +254,14 @@ impl Fx {
                     });
                 }
             }
-            Event::LevelUp(l) => self.labels.push(Label {
-                text: format!("Level {l}"),
-                t0: now,
-                c: theme::TEXT,
-            }),
+            Event::LevelUp(l) => {
+                self.level_t0 = now;
+                self.labels.push(Label {
+                    text: format!("Level {l}"),
+                    t0: now,
+                    c: theme::TEXT,
+                })
+            }
             Event::PracticeReset => self.labels.push(Label {
                 text: "Fresh board".into(),
                 t0: now,
@@ -202,6 +277,7 @@ impl Fx {
         self.particles.retain(|p| age_ms(now, p.t0) < p.life);
         self.labels.retain(|l| now < l.t0 || age_ms(now, l.t0) < 1400.0);
         self.flashes.retain(|f| age_ms(now, f.2) < 160.0);
+        self.impacts.retain(|i| age_ms(now, i.3) < 320.0);
     }
 }
 
@@ -282,31 +358,111 @@ pub struct BoardInput<'a> {
     /// Pointing target (leftmost column) and whether the ghost reaches it.
     pub target: Option<(i32, i32, bool)>,
     pub best: Option<String>,
+    /// Hide hold, stats and queue (setup's try-it board).
+    pub hide_hud: bool,
 }
+
+fn ease(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Rows each settled cell has to fall, in the latest clear, as a function of its row now.
+fn fall_rows(rows: &[i32], y: i32) -> i32 {
+    // A cell now at row y came from row o with y = o + (cleared rows below o).
+    for k in 0..=rows.len() as i32 {
+        let o = y - k;
+        if !rows.contains(&o) && rows.iter().filter(|r| **r > o).count() as i32 == k {
+            return k;
+        }
+    }
+    0
+}
+
+const CLEAR_DISSOLVE_MS: f32 = 170.0;
+const CLEAR_FALL_DELAY_MS: f32 = 150.0;
+const CLEAR_FALL_MS: f32 = 170.0;
 
 pub fn draw_game(g: &mut Gfx, fx: &mut Fx, b: &BoardInput) {
     let game = b.game;
     let look = &b.look;
     let now = b.now;
+    let dt_ms = if fx.last_now == 0 {
+        16.0
+    } else {
+        (now.saturating_sub(fx.last_now) as f32 / 1000.0).min(50.0)
+    };
+    fx.last_now = now;
     fx.prune(now);
-    draw_board_frame(g);
+    let rm = look.reduced_motion;
 
-    // Settled blocks: calmer than the active piece.
+    // Board frame, with a soft pulse on level-up.
+    draw_board_frame(g);
+    let lv = age_ms(now, fx.level_t0);
+    if fx.level_t0 > 0 && lv < 700.0 && !rm {
+        let r = Rect::new(
+            BOARD_X - 6,
+            BOARD_Y - 6,
+            (BOARD_W + 12) as u32,
+            (BOARD_H + 12) as u32,
+        );
+        g.round_outline(r, 14, alpha(theme::CYAN, 0.5 * (1.0 - lv / 700.0)), 2);
+    }
+
+    // Settled blocks fall into place after a clear; game over greys them from the top.
+    let latest = fx.clears.last().map(|c| (c.rows.clone(), age_ms(now, c.t0)));
+    let fall = |y: i32| -> f32 {
+        match &latest {
+            Some((rows, age)) if !rm => {
+                let k = fall_rows(rows, y) as f32;
+                let t = ((age - CLEAR_FALL_DELAY_MS) / CLEAR_FALL_MS).clamp(0.0, 1.0);
+                k * (1.0 - ease(t))
+            }
+            _ => 0.0,
+        }
+    };
+    let grey = |y: i32| -> f32 {
+        match fx.over_t0 {
+            Some(t0) => ((age_ms(now, t0) - (y - HIDDEN_ROWS) as f32 * 40.0) / 220.0).clamp(0.0, 1.0),
+            None => 0.0,
+        }
+    };
+    let settled_colour = |k: Kind, y: i32| -> Color {
+        let c = colour(k);
+        let gr = grey(y);
+        if gr <= 0.0 {
+            return c;
+        }
+        let l = (c.r as f32 * 0.3 + c.g as f32 * 0.59 + c.b as f32 * 0.11) * 0.55;
+        let mix = |v: u8| (v as f32 * (1.0 - gr) + l * gr) as u8;
+        Color::RGB(mix(c.r), mix(c.g), mix(c.b))
+    };
+    let shifted = |x: i32, y: i32, f: f32| -> Rect {
+        let r = cell_rect(x, y);
+        Rect::new(r.x(), r.y() - (f * CELL as f32) as i32, r.width(), r.height())
+    };
     for y in HIDDEN_ROWS..ROWS {
+        let f = fall(y);
         for x in 0..COLS {
             if let Some(k) = Kind::from_cell(game.cell(x, y)) {
-                let r = cell_rect(x, y);
-                glow_at(g, r, colour(k), 2.2, 0.07 * look.glow);
+                glow_at(
+                    g,
+                    shifted(x, y, f),
+                    settled_colour(k, y),
+                    2.2,
+                    0.07 * look.glow * (1.0 - grey(y) * 0.8),
+                );
             }
         }
     }
     for y in HIDDEN_ROWS..ROWS {
+        let f = fall(y);
         for x in 0..COLS {
             if let Some(k) = Kind::from_cell(game.cell(x, y)) {
                 draw_block(
                     g,
-                    cell_rect(x, y),
-                    colour(k),
+                    shifted(x, y, f),
+                    settled_colour(k, y),
                     0.70 * (0.85 + 0.15 * look.glow),
                     look,
                     Some(k),
@@ -325,15 +481,57 @@ pub fn draw_game(g: &mut Gfx, fx: &mut Fx, b: &BoardInput) {
             }
         }
     }
-    // Line clear sweeps.
+    // Cleared rows: a bright flash, then each block shrinks away from the centre outward.
     for c in &fx.clears {
-        let t = age_ms(now, c.t0) / 420.0;
-        let reach = if look.reduced_motion {
-            1.0
-        } else {
-            (t * 2.2).min(1.0)
-        };
-        let a = (1.0 - t).max(0.0) * if c.big { 0.9 } else { 0.6 };
+        let age = age_ms(now, c.t0);
+        for (ri, &r) in c.rows.iter().enumerate() {
+            if r < HIDDEN_ROWS {
+                continue;
+            }
+            let Some(row) = c.cells.get(ri) else { continue };
+            for x in 0..COLS {
+                let Some(k) = Kind::from_cell(row[x as usize]) else {
+                    continue;
+                };
+                // Flash at full size first, then dissolve from the centre outward.
+                let delay = if rm {
+                    0.0
+                } else {
+                    70.0 + (x as f32 - 4.5).abs() * 12.0
+                };
+                let t = ((age - delay) / CLEAR_DISSOLVE_MS).clamp(0.0, 1.0);
+                if t >= 1.0 {
+                    continue;
+                }
+                let s = if rm { 1.0 } else { 1.0 - ease(t) };
+                let base = cell_rect(x, r);
+                let w = (CELL as f32 * s) as i32;
+                if w < 2 {
+                    continue;
+                }
+                let dst = Rect::new(
+                    base.center().x() - w / 2,
+                    base.center().y() - w / 2,
+                    w as u32,
+                    w as u32,
+                );
+                let a = if rm { 1.0 - t } else { 1.0 };
+                draw_block(g, dst, alpha(colour(k), a), 1.0, look, None);
+                let flash = (1.0 - age / 120.0).max(0.0);
+                let canvas = &mut g.canvas;
+                Gfx::tinted(
+                    &mut g.tex.block,
+                    canvas,
+                    dst,
+                    alpha(Color::RGB(255, 255, 255), 0.65 * flash),
+                    true,
+                );
+            }
+        }
+        // A soft band sweeping out from the centre.
+        let t = age / 420.0;
+        let reach = if rm { 1.0 } else { (t * 2.2).min(1.0) };
+        let a = (1.0 - t).max(0.0) * if c.big { 0.8 } else { 0.45 };
         for &r in &c.rows {
             if r < HIDDEN_ROWS {
                 continue;
@@ -354,7 +552,7 @@ pub fn draw_game(g: &mut Gfx, fx: &mut Fx, b: &BoardInput) {
             let canvas = &mut g.canvas;
             Gfx::tinted(&mut g.tex.hband, canvas, dst, alpha(col, a), true);
         }
-        if c.big && !look.reduced_motion {
+        if c.big && !rm {
             // Local highlight around the cleared rows (no full-screen flash).
             let ys: Vec<i32> = c.rows.iter().filter(|r| **r >= HIDDEN_ROWS).copied().collect();
             if let (Some(lo), Some(hi)) = (ys.iter().min(), ys.iter().max()) {
@@ -372,7 +570,7 @@ pub fn draw_game(g: &mut Gfx, fx: &mut Fx, b: &BoardInput) {
                     &mut g.tex.glow,
                     canvas,
                     dst,
-                    alpha(theme::CYAN, 0.18 * (1.0 - t)),
+                    alpha(theme::CYAN, 0.18 * (1.0 - t).max(0.0)),
                     true,
                 );
             }
@@ -387,6 +585,23 @@ pub fn draw_game(g: &mut Gfx, fx: &mut Fx, b: &BoardInput) {
         let dst = Rect::new(x as i32 - s / 2, y as i32 - s / 2, s as u32, s as u32);
         let canvas = &mut g.canvas;
         Gfx::tinted(&mut g.tex.dot, canvas, dst, alpha(p.c, 0.8 * a), true);
+    }
+    // Landing dust.
+    for &(x, y, c, t0) in &fx.impacts {
+        let t = age_ms(now, t0) / 320.0;
+        for side in [-1.0f32, 1.0] {
+            let px = x + side * (6.0 + 26.0 * ease(t));
+            let py = y - 4.0 - 10.0 * ease(t);
+            let s = (8.0 * (1.0 - t)) as i32 + 2;
+            let canvas = &mut g.canvas;
+            Gfx::tinted(
+                &mut g.tex.dot,
+                canvas,
+                Rect::new(px as i32 - s / 2, py as i32 - s / 2, s as u32, s as u32),
+                alpha(c, 0.7 * (1.0 - t)),
+                true,
+            );
+        }
     }
 
     if game.is_playing() {
@@ -426,32 +641,65 @@ pub fn draw_game(g: &mut Gfx, fx: &mut Fx, b: &BoardInput) {
                 Gfx::tinted(&mut g.tex.vgrad, canvas, dst, alpha(t.c, 0.38 * a), true);
             }
         }
-        // Active piece with halo; brief pulse on rotation.
+        // Visual position glides toward the grid position (fast, never far behind).
+        let target = (p.x as f32, p.y as f32);
+        let (vx, vy) = match fx.vis {
+            Some((vx, vy)) if !rm && (vx - target.0).abs() < 4.0 && (vy - target.1).abs() < 4.0 => {
+                let kx = 1.0 - (-dt_ms / 28.0).exp();
+                let ky = 1.0 - (-dt_ms / 20.0).exp();
+                (vx + (target.0 - vx) * kx, vy + (target.1 - vy) * ky)
+            }
+            _ => target,
+        };
+        fx.vis = Some((vx, vy));
+        let ang = match fx.rot_anim {
+            Some((t0, a0)) => {
+                let t = age_ms(now, t0) / 110.0;
+                if t >= 1.0 {
+                    fx.rot_anim = None;
+                    0.0
+                } else {
+                    a0 * (1.0 - ease(t))
+                }
+            }
+            None => 0.0,
+        };
+        let spawn = if rm {
+            1.0
+        } else {
+            ease(age_ms(now, fx.spawn_t0) / 110.0)
+        };
+        let n = p.kind.box_size() as f32;
+        let (sa, ca) = ang.to_radians().sin_cos();
+        let mut rects = Vec::with_capacity(4);
+        for (cx, cy) in p.kind.cells(p.rot) {
+            if p.y + cy < HIDDEN_ROWS - 1 {
+                continue;
+            }
+            let rx = cx as f32 + 0.5 - n / 2.0;
+            let ry = cy as f32 + 0.5 - n / 2.0;
+            let (qx, qy) = (rx * ca - ry * sa, rx * sa + ry * ca);
+            let px = BOARD_X as f32 + (vx + n / 2.0 + qx) * CELL as f32 - CELL as f32 / 2.0;
+            let py = BOARD_Y as f32
+                + (vy + n / 2.0 + qy - HIDDEN_ROWS as f32 - (1.0 - spawn) * 0.5) * CELL as f32
+                - CELL as f32 / 2.0;
+            rects.push((
+                Rect::new(px.round() as i32, py.round() as i32, CELL as u32, CELL as u32),
+                p.y + cy < HIDDEN_ROWS,
+            ));
+        }
         let pulse = fx
             .rot_pulse
             .map(|t0| (1.0 - age_ms(now, t0) / 130.0).max(0.0))
             .unwrap_or(0.0);
-        let pulse = if look.reduced_motion { pulse * 0.4 } else { pulse };
-        for (x, y) in p.cells() {
-            if y >= HIDDEN_ROWS - 1 {
-                let r = cell_rect(x, y);
-                glow_at(g, r, c, 3.4, (0.30 + 0.20 * pulse) * look.glow);
-            }
+        let pulse = if rm { pulse * 0.4 } else { pulse };
+        for (r, _) in &rects {
+            glow_at(g, *r, c, 3.4, (0.30 + 0.20 * pulse) * look.glow * spawn);
         }
-        for (x, y) in p.cells() {
-            if y >= HIDDEN_ROWS - 1 {
-                let r = cell_rect(x, y);
-                let above = y < HIDDEN_ROWS;
-                let bright = (0.92 + 0.12 * pulse) * (0.9 + 0.1 * look.glow);
-                draw_block(
-                    g,
-                    r,
-                    if above { scale(c, 0.6) } else { c },
-                    bright,
-                    look,
-                    Some(p.kind),
-                );
-            }
+        for (r, above) in &rects {
+            let bright = (0.92 + 0.12 * pulse) * (0.9 + 0.1 * look.glow);
+            let col = if *above { scale(c, 0.6) } else { c };
+            draw_block(g, *r, alpha(col, spawn), bright, look, Some(p.kind));
         }
         // Pointing target marker (never implies an impossible destination: it dims when the
         // ghost cannot reach it).
@@ -466,7 +714,9 @@ pub fn draw_game(g: &mut Gfx, fx: &mut Fx, b: &BoardInput) {
         }
     }
 
-    draw_hud(g, b);
+    if !b.hide_hud {
+        draw_hud(g, fx, b, dt_ms);
+    }
 
     // Labels for difficult clears, near the top of the board.
     let mut ly = BOARD_Y + BOARD_H / 3;
@@ -482,17 +732,24 @@ pub fn draw_game(g: &mut Gfx, fx: &mut Fx, b: &BoardInput) {
         } else {
             1.0 - ((t - 0.15) / 0.85).powf(2.0)
         };
-        let rise = if look.reduced_motion { 0 } else { (t * 30.0) as i32 };
+        let rise = if rm { 0 } else { (t * 30.0) as i32 };
+        // A small pop on entry.
+        let px = if rm {
+            40.0
+        } else {
+            40.0 * (0.85 + 0.15 * ease(t / 0.12))
+        };
         g.text_centered(
             &text,
             BOARD_X + BOARD_W / 2,
             ly - rise,
-            40.0,
+            px,
             Face::Semi,
             alpha(c, a.max(0.0)),
         );
         ly += 52;
     }
+    fx.last_board.clone_from(&game.board);
 }
 
 pub fn fmt_time(ms: u64) -> String {
@@ -511,9 +768,11 @@ pub fn fmt_score(s: u64) -> String {
     out
 }
 
-fn draw_hud(g: &mut Gfx, b: &BoardInput) {
+fn draw_hud(g: &mut Gfx, fx: &mut Fx, b: &BoardInput, dt_ms: f32) {
     let game = b.game;
     let look = &b.look;
+    let now = b.now;
+    let rm = look.reduced_motion;
     let lx = BOARD_X - 70; // right edge of the left column
     let rx = BOARD_X + BOARD_W + 70; // left edge of the right column
     let label = |g: &mut Gfx, s: &str, x: i32, y: i32, right: bool| {
@@ -523,10 +782,32 @@ fn draw_hud(g: &mut Gfx, b: &BoardInput) {
             g.text(s, x, y, 22.0, Face::Semi, theme::TEXT_FAINT);
         }
     };
-    // Hold.
+    // Hold, with a small pop when it changes.
     label(g, S::HUD_HOLD, lx, BOARD_Y + 4, true);
     if let Some(k) = game.hold {
-        draw_mini(g, k, lx - 70, BOARD_Y + 90, 30, game.hold_used, look);
+        let pop = if rm || fx.hold_t0 == 0 {
+            1.0
+        } else {
+            0.6 + 0.4 * ease(age_ms(now, fx.hold_t0) / 160.0)
+        };
+        draw_mini(
+            g,
+            k,
+            lx - 70,
+            BOARD_Y + 90,
+            (30.0 * pop) as i32,
+            game.hold_used,
+            look,
+        );
+    }
+    // The score counts up instead of jumping.
+    let actual = game.score as f64;
+    if rm || fx.score_shown > actual || (actual - fx.score_shown) < 1.0 {
+        fx.score_shown = actual;
+    } else {
+        let k = 1.0 - (-(dt_ms as f64) / 140.0).exp();
+        fx.score_shown += (actual - fx.score_shown) * k + 0.5;
+        fx.score_shown = fx.score_shown.min(actual);
     }
     // Stats.
     let mut y = BOARD_Y + 220;
@@ -551,7 +832,7 @@ fn draw_hud(g: &mut Gfx, b: &BoardInput) {
             stat(g, S::HUD_LINES, game.lines.to_string(), true);
         }
         _ => {
-            stat(g, S::HUD_SCORE, fmt_score(game.score), true);
+            stat(g, S::HUD_SCORE, fmt_score(fx.score_shown.round() as u64), true);
             stat(g, S::HUD_LEVEL, game.level.to_string(), false);
             stat(g, S::HUD_LINES, game.lines.to_string(), false);
         }
@@ -560,13 +841,23 @@ fn draw_hud(g: &mut Gfx, b: &BoardInput) {
         label(g, S::HUD_BEST, lx, y, true);
         g.text_right(best, lx, y + 30, 30.0, Face::Light, theme::TEXT_DIM);
     }
-    // Next queue.
+    // Next queue scrolls up by one slot when a piece spawns.
     label(g, S::HUD_NEXT, rx, BOARD_Y + 4, false);
+    let shift = if rm || fx.queue_t0 == 0 {
+        0.0
+    } else {
+        1.0 - ease(age_ms(now, fx.queue_t0) / 180.0)
+    };
     let mut ny = BOARD_Y + 90;
     for (i, k) in game.queue.iter().enumerate() {
         let cell = if i == 0 { 30 } else { 22 };
-        draw_mini(g, *k, rx + 70, ny, cell, false, look);
-        ny += if i == 0 { 120 } else { 92 };
+        let slot = if i == 0 { 120.0 } else { 92.0 };
+        let off = (shift * slot) as i32;
+        let last = i == game.queue.len() - 1;
+        if !(last && shift > 0.5) {
+            draw_mini(g, *k, rx + 70, ny + off, cell, false, look);
+        }
+        ny += slot as i32;
     }
     if game.mode == Mode::Zen {
         g.text(
@@ -577,84 +868,6 @@ fn draw_hud(g: &mut Gfx, b: &BoardInput) {
             Face::Light,
             theme::TEXT_FAINT,
         );
-    }
-}
-
-/// Small animated illustrations for the onboarding style choices.
-pub fn draw_illustration(g: &mut Gfx, kind: u8, cx: i32, cy: i32, now: u64) {
-    let t = now as f32 / 1e6;
-    match kind {
-        // Wrist twist: the remote seen from behind, rocking about its long axis.
-        0 => {
-            let ang = (t * 2.2).sin() * 40.0;
-            let dst = Rect::new(cx - 22, cy - 60, 44, 120);
-            g.tex.block.set_color_mod(150, 155, 170);
-            g.tex.block.set_alpha_mod(255);
-            g.tex.block.set_blend_mode(sdl2::render::BlendMode::Blend);
-            let _ = g
-                .canvas
-                .copy_ex(&g.tex.block, None, dst, ang as f64, None, false, false);
-            let dot = Rect::new(cx - 6, cy - 50, 12, 12);
-            let _ = g.canvas.copy_ex(
-                &g.tex.dot,
-                None,
-                dot,
-                ang as f64,
-                sdl2::rect::Point::new(6, 50),
-                false,
-                false,
-            );
-        }
-        // Circle: a dot tracing a circle with a short fading tail.
-        1 => {
-            for i in 0..14 {
-                let a = t * 5.0 - i as f32 * 0.16;
-                let x = cx as f32 + 48.0 * a.cos();
-                let y = cy as f32 + 48.0 * a.sin();
-                let s = 18 - i;
-                let dst = Rect::new(x as i32 - s / 2, y as i32 - s / 2, s as u32, s as u32);
-                let canvas = &mut g.canvas;
-                Gfx::tinted(
-                    &mut g.tex.dot,
-                    canvas,
-                    dst,
-                    alpha(theme::CYAN, 1.0 - i as f32 / 14.0),
-                    true,
-                );
-            }
-        }
-        // Pointing: a pointer gliding over a strip of columns, the column under it lit.
-        2 => {
-            let u = ((t * 1.3).sin() * 0.5 + 0.5) * 9.99;
-            for i in 0..10 {
-                let r = Rect::new(cx - 100 + i * 20, cy + 10, 18, 18);
-                let lit = i == u as i32;
-                g.round(r, 4, if lit { theme::CYAN } else { Color::RGB(40, 44, 52) });
-            }
-            let px = cx - 100 + (u * 20.0) as i32;
-            let dst = Rect::new(px - 8, cy - 30, 16, 16);
-            let canvas = &mut g.canvas;
-            Gfx::tinted(&mut g.tex.dot, canvas, dst, theme::TEXT, false);
-        }
-        // Flick: a quick left/right jab of an arrow.
-        _ => {
-            let phase = (t * 1.2).fract();
-            let dir = if (t * 1.2) as i32 % 2 == 0 { 1.0 } else { -1.0 };
-            let off = if phase < 0.25 {
-                (phase / 0.25) * 60.0
-            } else {
-                60.0 * (1.0 - (phase - 0.25) / 0.75)
-            };
-            let x = cx + (dir * off) as i32;
-            g.round(Rect::new(x - 30, cy - 5, 60, 10), 5, theme::CYAN);
-            let tip = x + (dir * 34.0) as i32;
-            for k in 0..3 {
-                let s = 22 - k * 6;
-                let dst = Rect::new(tip - s / 2, cy - s / 2, s as u32, s as u32);
-                let canvas = &mut g.canvas;
-                Gfx::tinted(&mut g.tex.dot, canvas, dst, theme::CYAN, true);
-            }
-        }
     }
 }
 

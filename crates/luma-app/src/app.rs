@@ -145,6 +145,11 @@ pub struct App {
     activity_ptr: (i32, i32),
     pub pointer: Option<(i32, i32)>,
     cursor_hidden: Option<bool>,
+    /// Last system pointer event, and the app-drawn cursor fed by the sensor's own cursor
+    /// coordinates when the system pointer goes quiet (e.g. a hidden system cursor).
+    sdl_ptr_us: u64,
+    pub own_cursor: Option<(i32, i32)>,
+    own_cursor_us: u64,
     pub recorder: Option<Recorder>,
     pub last_trace: Option<PathBuf>,
     pub dev_msg: String,
@@ -156,6 +161,8 @@ pub struct App {
     pub sdl_desc: String,
     pub records_tab: u8,
     pub settings_dirty: bool,
+    /// When the current screen was entered (transitions and input guards).
+    pub screen_since: u64,
     pub cursor_test_hidden: bool,
     pub diag_counts: (u64, u64),
 }
@@ -195,6 +202,9 @@ impl App {
             activity_ptr: (0, 0),
             pointer: None,
             cursor_hidden: None,
+            sdl_ptr_us: 0,
+            own_cursor: None,
+            own_cursor_us: 0,
             recorder: None,
             last_trace: None,
             dev_msg: String::new(),
@@ -206,6 +216,7 @@ impl App {
             sdl_desc,
             records_tab: 0,
             settings_dirty: false,
+            screen_since: 0,
             cursor_test_hidden: false,
             diag_counts: (0, 0),
         };
@@ -218,6 +229,7 @@ impl App {
     }
 
     pub fn go(&mut self, s: Screen) {
+        self.screen_since = now_us();
         self.list = List::new(0);
         if s == Screen::Menu {
             self.list = List::new(self.menu_focus);
@@ -506,6 +518,7 @@ impl App {
             match &inp {
                 In::PointerMove { x, y } => {
                     self.pointer = Some((*x, *y));
+                    self.sdl_ptr_us = now;
                     self.engine
                         .pointer(now, Vec2::new(*x as f32 / 1080.0, *y as f32 / 1080.0));
                 }
@@ -551,6 +564,8 @@ impl App {
                     K::Num5 => Some(Script::FlickLeft),
                     K::Num6 => Some(Script::FlickRight),
                     K::Num7 => Some(Script::Drop),
+                    K::Num8 => Some(Script::SwingLeft),
+                    K::Num9 => Some(Script::SwingRight),
                     _ => None,
                 };
                 if let (Some(s), true) = (script, *down) {
@@ -717,8 +732,7 @@ impl App {
         }
         match self.screen {
             Screen::Game => self.update_game(now, commits),
-            Screen::Calibrate => self.update_calibration(now),
-            Screen::Onboard => self.update_onboarding(now, &commits),
+            Screen::Calibrate => self.update_calibration(now, &commits),
             Screen::MotionLost => {
                 if self.motion.is_streaming(now) {
                     self.go(Screen::Pause);
@@ -727,6 +741,7 @@ impl App {
             Screen::Diagnostics | Screen::Developer => self.update_diag(&commits),
             _ => {}
         }
+        self.update_own_cursor(now);
         // Cursor: hidden during play only when the sensor (not the pointer) drives motion,
         // or in button mode; the diagnostics toggle tests the effect on sensor delivery.
         let streaming_sensor = self.motion.is_real() && self.motion.is_streaming(now);
@@ -744,7 +759,7 @@ impl App {
         }
     }
 
-    fn default_range(&self) -> PointRange {
+    pub fn default_range(&self) -> PointRange {
         match self.engine.active_source() {
             Some(luma_input::calib::AimSource::Pointer) => {
                 let l = BOARD_X as f32 / 1080.0;
@@ -992,6 +1007,31 @@ impl App {
         }
     }
 
+    /// When the system pointer is silent but the sensor reports its cursor position, draw
+    /// our own cursor there and let it hover menus.
+    fn update_own_cursor(&mut self, now: u64) {
+        if now.saturating_sub(self.sdl_ptr_us) < 1_500_000 || self.screen == Screen::Game {
+            return;
+        }
+        let Some((cx, cy)) = self.motion.last.and_then(|s| s.cursor) else {
+            return;
+        };
+        let p = (cx.round() as i32, cy.round() as i32);
+        if self
+            .own_cursor
+            .is_some_and(|o| (o.0 - p.0).abs() + (o.1 - p.1).abs() <= 2)
+        {
+            return;
+        }
+        self.own_cursor = Some(p);
+        self.own_cursor_us = now;
+        match self.screen {
+            Screen::Onboard => self.onboard_input(&In::PointerMove { x: p.0, y: p.1 }),
+            Screen::Calibrate | Screen::Diagnostics => {}
+            _ => self.screen_input(UiIn::Pointer(p.0, p.1)),
+        }
+    }
+
     // ---------------------------------------------------------------- drawing
 
     pub fn draw(&mut self, g: &mut Gfx) {
@@ -1004,6 +1044,20 @@ impl App {
             Screen::Diagnostics => self.draw_diag(g, now),
             Screen::Developer => self.draw_developer(g),
             _ => self.draw_screen(g, now),
+        }
+        // Every screen fades in from black (except returning to play, which has "Ready").
+        let since = now.saturating_sub(self.screen_since) as f32 / 1000.0;
+        if since < 240.0 && self.screen != Screen::Game && !self.store.settings.reduced_motion {
+            let a = 1.0 - since / 240.0;
+            g.fill(
+                sdl2::rect::Rect::new(0, 0, crate::gfx::W as u32, crate::gfx::H as u32),
+                sdl2::pixels::Color::RGBA(0, 0, 0, (a * a * 255.0) as u8),
+            );
+        }
+        if self.screen != Screen::Game && now.saturating_sub(self.own_cursor_us) < 4_000_000 {
+            if let Some((x, y)) = self.own_cursor {
+                crate::setup::draw_cursor(g, x, y, 0.8, now);
+            }
         }
         let d = self.dim_level(now);
         if d > 0.0 {
@@ -1040,6 +1094,7 @@ impl App {
                 now,
                 target,
                 best,
+                hide_hud: false,
             };
             view::draw_game(g, &mut s.fx, &input);
         }

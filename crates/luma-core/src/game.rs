@@ -106,6 +106,7 @@ pub enum Event {
     Moved,
     Rotated {
         kick: usize,
+        cw: bool,
     },
     /// An action that could not be applied (blocked move/rotation, second hold).
     Blocked,
@@ -358,7 +359,7 @@ impl Game {
                     self.lock_acc_us = 0;
                 }
                 self.after_manipulation();
-                self.events.push(Event::Rotated { kick: i });
+                self.events.push(Event::Rotated { kick: i, cw });
                 return true;
             }
         }

@@ -28,7 +28,7 @@ A `v*` tag, or a manual run with `release_tag`, publishes a pre-release.
 
 ```sh
 sudo apt-get install -y libsdl2-dev
-cargo test --workspace              # engine, gestures (all four profiles), persistence, parsing
+cargo test --workspace              # engine, gestures (all six profiles), persistence, parsing
 cargo run -p luma-app -- --flow-test  # headless app state machine
 cargo run -p luma-app               # simulator window
 ```
@@ -46,6 +46,7 @@ Simulator controls:
 | 3 4 | scripted circle clockwise / anticlockwise |
 | 5 6 | scripted flick left / right |
 | 7 | scripted downward flick (drop) |
+| 8 9 | scripted swing left / right (with the natural pull back) |
 
 Simulated input is labelled "Simulated (not hardware)" in diagnostics. It shows that the logic
 works, not how a real remote behaves.
@@ -71,7 +72,7 @@ scripts/smoke-armel.sh target/armv7-unknown-linux-gnueabi/release/luma-blocks de
 python3 scripts/gen-notices.py --licenses-dir build/licenses && cp -r deps-out/webos/licenses/* build/licenses/
 for f in release debug; do
   python3 scripts/package-ipk.py --binary target/armv7-unknown-linux-gnueabi/release/luma-blocks \
-    --sdl-lib deps-out/webos/lib/libSDL2-2.0.so.0 --version 0.1.0 --flavor $f \
+    --sdl-lib deps-out/webos/lib/libSDL2-2.0.so.0 --version 0.2.0 --flavor $f \
     --strip $WEBOS_SDK/bin/arm-webos-linux-gnueabi-strip --licenses build/licenses --out dist
 done
 ```

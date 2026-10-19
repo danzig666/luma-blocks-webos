@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct Thresholds {
     // --- Aim frame -------------------------------------------------------------------
+    /// Use the gyroscope for motion (recommended); orientation only when it is missing.
+    pub prefer_gyro: bool,
     /// Degrees of remote yaw/pitch that correspond to one screen height of aim movement.
     pub deg_per_sh: f32,
     /// Exponential smoothing time constant for aim velocity, ms.
@@ -56,21 +58,36 @@ pub struct Thresholds {
     /// Max path length relative to an ideal arc of the same turning (scribble rejection).
     pub circle_max_path_ratio: f32,
 
-    // --- Horizontal flick ------------------------------------------------------------
-    /// Horizontal aim speed that starts a flick, SH/s.
-    pub flick_enter_speed: f32,
-    /// Speed below which a flick burst has ended / re-armed, SH/s.
-    pub flick_rearm_speed: f32,
-    /// Required |vx| / |vy| during the burst.
-    pub flick_dominance: f32,
-    /// Minimum horizontal travel during the burst, SH.
+    // --- Sideways strokes (Swing and Flick styles) -----------------------------------
+    // A stroke is a quick, horizontally dominant movement of the aim. The pull that brings
+    // the remote back afterwards is recognized as a return and ignored (like lifting a mouse
+    // off its pad), so the piece never follows the controller back.
+    /// Horizontal aim speed that starts a stroke, SH/s. Slower motion never moves a piece.
+    pub swing_start_speed: f32,
+    /// Below this speed (for `swing_end_ms`) the stroke has ended, SH/s.
+    pub swing_stop_speed: f32,
+    pub swing_end_ms: f32,
+    /// Required |vx| / |vy| when a stroke starts.
+    pub swing_dominance: f32,
+    /// Aim travel per column in Swing style, SH (the first column needs `swing_first_col` of it).
+    pub swing_col_sh: f32,
+    pub swing_first_col: f32,
+    /// Most columns one stroke may move.
+    pub swing_max_cols: f32,
+    /// Opposite motion within this time after a stroke counts as the return, ms...
+    pub swing_return_window_ms: f32,
+    /// ...up to this multiple of the stroke's own travel.
+    pub swing_return_ratio: f32,
+    /// Holding still this long ends the return window early, ms.
+    pub swing_return_still_ms: f32,
+    /// With circles enabled: a stroke must keep its heading within this many degrees of
+    /// horizontal for `swing_confirm_ms` before it moves anything.
+    pub swing_max_heading_dev_deg: f32,
+    pub swing_confirm_ms: f32,
+    /// Flick style: minimum travel of a stroke for its one column, SH.
     pub flick_min_travel_sh: f32,
-    /// Longest burst still counted as a flick (slower is a sweep), ms.
-    pub flick_max_ms: f32,
-    /// Opposite-direction motion within this window after a flick is recoil, ms.
-    pub flick_recoil_ms: f32,
-    /// Maximum heading change during a flick when circles are enabled, degrees.
-    pub flick_max_heading_change_deg: f32,
+    /// Speed below which a disarmed recognizer re-arms, SH/s.
+    pub rearm_speed: f32,
 
     // --- Downward hard drop ----------------------------------------------------------
     /// Downward aim speed that starts a drop candidate, SH/s.
@@ -111,6 +128,7 @@ pub struct Thresholds {
 impl Default for Thresholds {
     fn default() -> Self {
         Thresholds {
+            prefer_gyro: true,
             deg_per_sh: 24.0,
             velocity_smoothing_ms: 22.0,
             max_sample_gap_ms: 150.0,
@@ -133,13 +151,20 @@ impl Default for Thresholds {
             circle_max_ms: 1400.0,
             circle_max_path_ratio: 1.9,
 
-            flick_enter_speed: 1.5,
-            flick_rearm_speed: 0.45,
-            flick_dominance: 1.8,
-            flick_min_travel_sh: 0.05,
-            flick_max_ms: 280.0,
-            flick_recoil_ms: 350.0,
-            flick_max_heading_change_deg: 70.0,
+            swing_start_speed: 0.8,
+            swing_stop_speed: 0.3,
+            swing_end_ms: 60.0,
+            swing_dominance: 1.3,
+            swing_col_sh: 0.10,
+            swing_first_col: 0.5,
+            swing_max_cols: 9.0,
+            swing_return_window_ms: 1100.0,
+            swing_return_ratio: 1.6,
+            swing_return_still_ms: 220.0,
+            swing_max_heading_dev_deg: 40.0,
+            swing_confirm_ms: 90.0,
+            flick_min_travel_sh: 0.04,
+            rearm_speed: 0.45,
 
             drop_enter_speed: 1.8,
             drop_min_peak_speed: 2.6,
@@ -170,8 +195,13 @@ pub enum RotationStyle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum HorizontalStyle {
+    /// Quick sideways strokes move the piece by as many columns as the stroke is long; the
+    /// return pull is ignored. Default: it matches how people naturally move a remote.
     #[default]
+    Swing,
+    /// The piece follows the column the remote points at (absolute).
     Pointing,
+    /// Each sideways flick moves exactly one column; returns ignored.
     Flick,
 }
 
@@ -191,7 +221,7 @@ impl Default for Profile {
     fn default() -> Self {
         Profile {
             rotation: RotationStyle::Twist,
-            horizontal: HorizontalStyle::Pointing,
+            horizontal: HorizontalStyle::Swing,
             gesture_drop: true,
             sens_horizontal: 1.0,
             sens_rotation: 1.0,
@@ -222,7 +252,8 @@ pub fn effective(t: &Thresholds, p: &Profile) -> Thresholds {
     let h = p.sens_horizontal.clamp(0.5, 2.0);
     let r = p.sens_rotation.clamp(0.5, 2.0);
     let d = p.sens_drop.clamp(0.5, 2.0);
-    e.flick_enter_speed /= h;
+    e.swing_start_speed /= h;
+    e.swing_col_sh /= h;
     e.flick_min_travel_sh /= h;
     e.twist_enter_deg /= r;
     e.twist_rearm_deg /= r;

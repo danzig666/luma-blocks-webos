@@ -42,9 +42,11 @@ fn ready(p: Profile, hz: f32, seed: u64) -> (GestureEngine, Synth) {
     (e, s)
 }
 
-const ALL: [(RotationStyle, HorizontalStyle); 4] = [
+const ALL: [(RotationStyle, HorizontalStyle); 6] = [
+    (RotationStyle::Twist, HorizontalStyle::Swing),
     (RotationStyle::Twist, HorizontalStyle::Pointing),
     (RotationStyle::Twist, HorizontalStyle::Flick),
+    (RotationStyle::Circle, HorizontalStyle::Swing),
     (RotationStyle::Circle, HorizontalStyle::Pointing),
     (RotationStyle::Circle, HorizontalStyle::Flick),
 ];
@@ -124,7 +126,7 @@ fn twist_handles_angle_wraparound() {
 
 #[test]
 fn twist_does_not_drag_the_pointing_column() {
-    let (mut e, mut s) = ready(Profile::default(), 100.0, 6);
+    let (mut e, mut s) = ready(profile(RotationStyle::Twist, HorizontalStyle::Pointing), 100.0, 6);
     let range = PointRange {
         left: -0.3,
         center: 0.0,
@@ -343,34 +345,131 @@ fn gesture_drop_can_be_disabled() {
 
 // --- Profiles, mixed controls ----------------------------------------------------------
 
+/// The sideways gesture of each style and what it should produce.
+fn sideways(hor: HorizontalStyle, s: &mut Synth, dir: f32) -> (Vec<MotionSample>, Vec<Gesture>) {
+    let g = if dir > 0.0 {
+        Gesture::MoveRight
+    } else {
+        Gesture::MoveLeft
+    };
+    match hor {
+        // 8 degrees at 24 deg/SH and 0.10 SH per column: 1 + floor((0.333 - 0.05) / 0.1) = 3.
+        HorizontalStyle::Swing => (gestures::swing(s, dir, 8.0, 160.0, 1.0), vec![g; 3]),
+        HorizontalStyle::Flick => (gestures::flick(s, dir, 7.0, 120.0), vec![g]),
+        HorizontalStyle::Pointing => (Vec::new(), Vec::new()),
+    }
+}
+
 #[test]
-fn all_four_profiles_run_a_mixed_sequence() {
+fn all_six_profiles_run_a_mixed_sequence() {
     for (rot, hor) in ALL {
         let p = profile(rot, hor);
         let (mut e, mut s) = ready(p, 100.0, 20);
         let mut got = Vec::new();
+        let mut want = Vec::new();
         let rotate = |s: &mut Synth, dir: f32| match rot {
             RotationStyle::Twist => gestures::twist(s, dir, 45.0, 200.0),
             RotationStyle::Circle => gestures::circle(s, dir, 3.5, 600.0, 1.05),
         };
         got.extend(feed(&mut e, &rotate(&mut s, 1.0)));
-        if hor == HorizontalStyle::Flick {
-            got.extend(feed(&mut e, &gestures::flick(&mut s, -1.0, 7.0, 120.0)));
-        }
+        want.push(Gesture::RotateCw);
+        let (v, w) = sideways(hor, &mut s, -1.0);
+        got.extend(feed(&mut e, &v));
+        want.extend(w);
         got.extend(feed(&mut e, &rotate(&mut s, -1.0)));
+        want.push(Gesture::RotateCcw);
         got.extend(feed(&mut e, &gestures::drop(&mut s, 18.0, 160.0)));
-        if hor == HorizontalStyle::Flick {
-            got.extend(feed(&mut e, &gestures::flick(&mut s, 1.0, 7.0, 120.0)));
-        }
-        let mut want = vec![Gesture::RotateCw];
-        if hor == HorizontalStyle::Flick {
-            want.push(Gesture::MoveLeft);
-        }
-        want.extend([Gesture::RotateCcw, Gesture::HardDrop]);
-        if hor == HorizontalStyle::Flick {
-            want.push(Gesture::MoveRight);
-        }
+        want.push(Gesture::HardDrop);
+        let (v, w) = sideways(hor, &mut s, 1.0);
+        got.extend(feed(&mut e, &v));
+        want.extend(w);
         assert_eq!(got, want, "{rot:?}/{hor:?}");
+    }
+}
+
+// --- Swing: sideways strokes with the return pull ignored -----------------------------
+
+#[test]
+fn swing_moves_proportionally_and_the_pull_back_is_ignored() {
+    for rot in [RotationStyle::Twist, RotationStyle::Circle] {
+        let p = profile(rot, HorizontalStyle::Swing);
+        for hz in RATES {
+            for (dir, g) in [(1.0, Gesture::MoveRight), (-1.0, Gesture::MoveLeft)] {
+                // degrees -> columns (2.4 degrees per column, the first one at 1.2 degrees)
+                for (amp, cols, ms, back) in [
+                    (4.0, 2, 120.0, 1.0),
+                    (8.0, 3, 160.0, 1.4),
+                    (14.0, 6, 220.0, 0.8),
+                    (20.0, 8, 260.0, 1.8),
+                ] {
+                    let (mut e, mut s) = ready(p, hz, 31);
+                    let got = feed(&mut e, &gestures::swing(&mut s, dir, amp, ms, back));
+                    assert_eq!(
+                        got,
+                        vec![g; cols],
+                        "{rot:?} hz {hz} dir {dir} amp {amp} back {back}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn repeated_swings_ratchet_in_one_direction() {
+    let (mut e, mut s) = ready(Profile::default(), 100.0, 32);
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        got.extend(feed(&mut e, &gestures::swing(&mut s, 1.0, 8.0, 160.0, 1.2)));
+    }
+    assert_eq!(got, vec![Gesture::MoveRight; 9]);
+}
+
+#[test]
+fn chained_strokes_without_returning_keep_moving() {
+    let (mut e, mut s) = ready(Profile::default(), 100.0, 33);
+    let mut v = s.motion(150.0, |p| (6.0 * ease(p), 0.0, 0.0));
+    v.extend(s.hold(150.0));
+    v.extend(s.motion(150.0, |p| (6.0 * ease(p), 0.0, 0.0)));
+    v.extend(s.hold(400.0));
+    let got = feed(&mut e, &v);
+    assert!(
+        got.len() >= 4 && got.iter().all(|g| *g == Gesture::MoveRight),
+        "{got:?}"
+    );
+}
+
+#[test]
+fn a_deliberate_opposite_swing_after_resting_moves_back() {
+    let (mut e, mut s) = ready(Profile::default(), 100.0, 34);
+    let mut got = feed(&mut e, &gestures::swing(&mut s, 1.0, 8.0, 160.0, 1.0));
+    got.extend(feed(&mut e, &s.hold(300.0)));
+    got.extend(feed(&mut e, &gestures::swing(&mut s, -1.0, 4.0, 120.0, 1.0)));
+    let mut want = vec![Gesture::MoveRight; 3];
+    want.extend([Gesture::MoveLeft; 2]);
+    assert_eq!(got, want);
+}
+
+#[test]
+fn slow_drift_back_to_centre_never_moves() {
+    let (mut e, mut s) = ready(Profile::default(), 100.0, 35);
+    let got = feed(&mut e, &s.motion(1500.0, |p| (-15.0 * ease(p), 0.0, 0.0)));
+    assert!(got.is_empty(), "{got:?}");
+}
+
+#[test]
+fn twisting_does_not_swing() {
+    for hor in [HorizontalStyle::Swing, HorizontalStyle::Flick] {
+        let (mut e, mut s) = ready(profile(RotationStyle::Twist, hor), 100.0, 36);
+        let v = s.motion(200.0, |p| (3.0 * ease(p), 0.5 * ease(p), 45.0 * ease(p)));
+        let mut got = feed(&mut e, &v);
+        got.extend(feed(&mut e, &s.hold(200.0)));
+        got.extend(feed(
+            &mut e,
+            &s.motion(300.0, |p| (-3.0 * ease(p), -0.5 * ease(p), -45.0 * ease(p))),
+        ));
+        got.extend(feed(&mut e, &s.hold(300.0)));
+        assert_eq!(got, vec![Gesture::RotateCw], "{hor:?}");
     }
 }
 
@@ -524,7 +623,11 @@ fn pointer_fallback_supports_circle_flick_and_drop_but_never_twist() {
 
 #[test]
 fn pointing_near_a_boundary_does_not_flicker() {
-    let (mut e, mut s) = ready(Profile::default(), 100.0, 27);
+    let (mut e, mut s) = ready(
+        profile(RotationStyle::Twist, HorizontalStyle::Pointing),
+        100.0,
+        27,
+    );
     let range = PointRange {
         left: -0.3,
         center: 0.0,
@@ -561,7 +664,11 @@ fn pointing_near_a_boundary_does_not_flicker() {
 
 #[test]
 fn button_correction_suspends_pointing_until_a_new_movement() {
-    let (mut e, mut s) = ready(Profile::default(), 100.0, 28);
+    let (mut e, mut s) = ready(
+        profile(RotationStyle::Twist, HorizontalStyle::Pointing),
+        100.0,
+        28,
+    );
     let range = PointRange {
         left: -0.3,
         center: 0.0,
@@ -747,4 +854,115 @@ fn long_mixed_session_has_no_accidental_drops() {
         }
         assert_eq!(drops, 0, "{rot:?}/{hor:?}");
     }
+}
+
+/// Swing: 20 varied natural strokes per direction (size, speed, return speed and size,
+/// tremor, vertical wobble) in both rotation styles. Every stroke must move the right way by
+/// about its length (within one column) and the pull back must never move the piece.
+#[test]
+fn twenty_varied_swings_per_direction() {
+    let mut report = Vec::new();
+    for rot in [RotationStyle::Twist, RotationStyle::Circle] {
+        let p = profile(rot, HorizontalStyle::Swing);
+        for (dir, want) in [(1.0, Gesture::MoveRight), (-1.0, Gesture::MoveLeft)] {
+            let mut ok = 0;
+            let mut wrong = 0;
+            for i in 0..20u64 {
+                let r = |k: u64| var(i * 17 + 3, k);
+                let hz = [50.0, 60.0, 100.0][(i % 3) as usize];
+                let (mut e, mut s) = ready(p, hz, 200 + i);
+                s.tremor_deg = lerp(0.05, 0.45, r(1));
+                let amp = lerp(3.5, 16.0, r(2));
+                let ms = lerp(110.0, 260.0, r(3));
+                let wob = lerp(-1.0, 1.0, r(4));
+                let back_frac = lerp(0.6, 1.2, r(5));
+                let back_ms = ms * lerp(0.6, 1.6, r(6));
+                let mut v = s.motion(ms, |q| (dir * amp * ease(q), wob * ease(q), 0.0));
+                v.extend(s.hold(lerp(60.0, 300.0, r(7))));
+                v.extend(s.motion(back_ms, |q| {
+                    (-dir * amp * back_frac * ease(q), -wob * ease(q), 0.0)
+                }));
+                v.extend(s.hold(300.0));
+                let got = feed(&mut e, &v);
+                let n = got.iter().filter(|g| **g == want).count() as i32;
+                let bad = got.len() as i32 - n;
+                let expect = (1 + (((amp / 24.0) - 0.05) / 0.10) as i32).min(9);
+                if bad == 0 && (n - expect).abs() <= 1 && n >= 1 {
+                    ok += 1;
+                }
+                wrong += bad;
+            }
+            report.push(format!("{rot:?} swing {dir:+}: {ok}/20, wrong-way moves {wrong}"));
+            assert!(ok >= 19 && wrong == 0, "{}", report.join("\n"));
+        }
+    }
+    println!("{}", report.join("\n"));
+}
+
+// --- Robustness to firmware differences ----------------------------------------------
+
+#[test]
+fn gyro_reported_in_degrees_is_detected_and_still_works() {
+    let (mut e, mut s) = ready(Profile::default(), 100.0, 40);
+    let deg = |v: Vec<MotionSample>| -> Vec<MotionSample> {
+        v.into_iter()
+            .map(|mut m| {
+                m.gyro = m.gyro.map(|g| g.scale(57.29578));
+                m
+            })
+            .collect()
+    };
+    let mut got = feed(&mut e, &deg(gestures::twist(&mut s, 1.0, 45.0, 200.0)));
+    got.extend(feed(&mut e, &deg(gestures::twist(&mut s, -1.0, 45.0, 200.0))));
+    let (scale, checked) = e.gyro_units();
+    assert!(
+        checked && (scale - 1.0).abs() < 1e-3,
+        "detected {scale} {checked}"
+    );
+    // The first twist may run before the units were confirmed; from then on it is exact.
+    got.extend(feed(&mut e, &deg(gestures::swing(&mut s, 1.0, 8.0, 160.0, 1.0))));
+    assert!(got.ends_with(&[Gesture::MoveRight; 3]), "{got:?}");
+    assert!(got.contains(&Gesture::RotateCcw));
+}
+
+#[test]
+fn gyro_only_and_orientation_only_streams_both_work() {
+    // Gyro only.
+    let (mut e, mut s) = ready(Profile::default(), 100.0, 41);
+    let strip_q = |v: Vec<MotionSample>| -> Vec<MotionSample> {
+        v.into_iter()
+            .map(|mut m| {
+                m.quat = None;
+                m
+            })
+            .collect()
+    };
+    let mut got = feed(&mut e, &strip_q(gestures::twist(&mut s, 1.0, 45.0, 200.0)));
+    got.extend(feed(
+        &mut e,
+        &strip_q(gestures::swing(&mut s, -1.0, 8.0, 160.0, 1.0)),
+    ));
+    got.extend(feed(&mut e, &strip_q(gestures::drop(&mut s, 18.0, 160.0))));
+    let mut want = vec![Gesture::RotateCw];
+    want.extend([Gesture::MoveLeft; 3]);
+    want.push(Gesture::HardDrop);
+    assert_eq!(got, want, "gyro only");
+    // Orientation only.
+    let (mut e, mut s) = ready(Profile::default(), 100.0, 42);
+    let strip_g = |v: Vec<MotionSample>| -> Vec<MotionSample> {
+        v.into_iter()
+            .map(|mut m| {
+                m.gyro = None;
+                m
+            })
+            .collect()
+    };
+    let mut got = feed(&mut e, &strip_g(gestures::twist(&mut s, -1.0, 45.0, 200.0)));
+    got.extend(feed(
+        &mut e,
+        &strip_g(gestures::swing(&mut s, 1.0, 8.0, 160.0, 1.0)),
+    ));
+    let mut want = vec![Gesture::RotateCcw];
+    want.extend([Gesture::MoveRight; 3]);
+    assert_eq!(got, want, "orientation only");
 }

@@ -802,6 +802,8 @@ pub enum Script {
     CircleCcw,
     FlickLeft,
     FlickRight,
+    SwingLeft,
+    SwingRight,
     Drop,
 }
 
@@ -829,6 +831,8 @@ impl SimMotion {
             Script::CircleCcw => synth::gestures::circle(&mut g, -1.0, 3.5, 600.0, 1.05),
             Script::FlickLeft => synth::gestures::flick(&mut g, -1.0, 7.0, 120.0),
             Script::FlickRight => synth::gestures::flick(&mut g, 1.0, 7.0, 120.0),
+            Script::SwingLeft => synth::gestures::swing(&mut g, -1.0, 9.0, 170.0, 1.0),
+            Script::SwingRight => synth::gestures::swing(&mut g, 1.0, 9.0, 170.0, 1.0),
             Script::Drop => synth::gestures::drop(&mut g, 18.0, 160.0),
         };
         // Continue from wherever the script leaves the remote, so there is no jump.

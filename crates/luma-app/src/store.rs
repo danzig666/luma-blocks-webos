@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Sender};
 
-pub const SETTINGS_VERSION: u32 = 1;
+pub const SETTINGS_VERSION: u32 = 2;
 pub const SAVE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -256,6 +256,13 @@ impl Store {
         let _ = std::fs::create_dir_all(dir);
         let mut notes = Vec::new();
         let mut settings: Settings = load(dir, "settings.json", SETTINGS_VERSION, &mut notes);
+        if settings.version < 2 {
+            // 0.1.0 defaulted to absolute pointing, which follows the remote back when the
+            // player pulls it back; Swing replaces it as the default.
+            settings.profile.horizontal = luma_input::config::HorizontalStyle::Swing;
+            settings.version = 2;
+            notes.push("settings migrated to version 2 (sideways style: Swing)".into());
+        }
         settings.sanitize();
         let mut calibration: Calibration = load(dir, "calibration.json", 1, &mut notes);
         calibration.sanitize();
@@ -439,6 +446,22 @@ mod tests {
         assert!(r.save.is_none());
         assert!(d.join("records.json.corrupt").exists());
         assert!(!r.load_notes.is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn settings_from_0_1_0_move_to_swing() {
+        let d = tmpdir("migrate");
+        std::fs::create_dir_all(&d).unwrap();
+        let old = r#"{"version":1,"data":{"version":1,"first_run_done":true,"volume":4,"profile":{"rotation":"Twist","horizontal":"Pointing"}}}"#;
+        std::fs::write(d.join("settings.json"), old).unwrap();
+        let s = Store::open(&d);
+        assert_eq!(
+            s.settings.profile.horizontal,
+            luma_input::config::HorizontalStyle::Swing
+        );
+        assert_eq!(s.settings.volume, 4);
+        assert!(s.settings.first_run_done);
         let _ = std::fs::remove_dir_all(&d);
     }
 

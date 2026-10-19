@@ -1,24 +1,30 @@
-//! First-run onboarding and the guided calibration flow.
+//! First-run onboarding and the guided motion setup.
 //!
-//! Calibration (sensor available): neutral pose -> clockwise twist (finds the long axis and
-//! the clockwise sign) -> tip up (finds the pitch axis) -> left and right board edges.
-//! Pointer only: the two edge steps. Every step can be skipped with Back.
+//! Setup steps (sensor available):
+//! 1. Hold: the comfortable neutral pose (auto, once the remote is still).
+//! 2. Twist right and back: measures the remote's long axis and which way is clockwise.
+//! 3. Swing right and back: measures the sideways axis and its direction.
+//! 4. (Pointing style only) left and right board edges, with a visible aim dot.
+//! 5. Try it: a live board where every recognized gesture acts on a piece; colour buttons
+//!    flip rotation, sideways or drop direction if one feels reversed.
+//!
+//! Without a sensor the measuring steps are skipped. Every step shows an animated
+//! illustration and a live gauge, so it is always clear what to do and what is being seen.
 
 use crate::app::{App, Screen, Session};
 use crate::audio::Sfx;
-use crate::gfx::{alpha, theme, Face, Gfx, W};
+use crate::gfx::{alpha, theme, Face, Gfx, H, W};
+use crate::illus::{self, Illus};
 use crate::keys::In;
 use crate::platform::now_us;
 use crate::store::ControlMode;
 use crate::strings as S;
 use crate::ui::{Ev, Item, UiIn};
-use crate::view::{self, BOARD_W, BOARD_X, BOARD_Y};
+use crate::view::{self, BOARD_H, BOARD_W, BOARD_X, BOARD_Y};
 use luma_core::game::COLS;
 use luma_core::{Action, Game, Mode, Rules};
 use luma_input::buttons::Button;
-use luma_input::calib::{
-    apply_pitch_probe, apply_twist_probe, AimSource, AxisProbe, Calibration, PointRange,
-};
+use luma_input::calib::{apply_swing_probe, apply_twist_probe, AimSource, Calibration, PointRange};
 use luma_input::config::{HorizontalStyle, RotationStyle};
 use luma_input::engine::target_left_column;
 use luma_input::Gesture;
@@ -26,12 +32,12 @@ use sdl2::rect::Rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalStep {
-    Neutral,
+    Hold,
     Twist,
-    Tilt,
+    Swing,
     Left,
     Right,
-    Done,
+    Try,
 }
 
 pub struct Calib {
@@ -39,75 +45,117 @@ pub struct Calib {
     pub return_to: Screen,
     since: u64,
     still_since: Option<u64>,
-    probe: AxisProbe,
     crossed_at: Option<u64>,
     pub msg: Option<&'static str>,
     left: Option<f32>,
     working: Calibration,
+    /// Last "got it" moment, for the success flourish.
+    ok_at: Option<u64>,
+    try_session: Option<Session>,
+    try_target: Option<i32>,
+    tried: [bool; 3],
+    flash: Option<(u64, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnbStep {
     Welcome,
     Style,
-    Try,
 }
 
 pub struct Onboard {
     pub step: OnbStep,
     since: u64,
     row: usize,
-    tried: [bool; 3],
-    session: Option<Session>,
-    target: Option<i32>,
-    last_col: Option<f32>,
-    moved: f32,
 }
+
+const TWIST_TARGET_DEG: f32 = 35.0;
+const SWING_TARGET_DEG: f32 = 8.0;
+const HOLD_MS: u64 = 1_000_000;
 
 impl App {
     pub fn start_calibration(&mut self, return_to: Screen) {
         self.cal = Some(Calib {
-            step: CalStep::Neutral,
+            step: CalStep::Hold,
             return_to,
             since: now_us(),
             still_since: None,
-            probe: AxisProbe::default(),
             crossed_at: None,
             msg: None,
             left: None,
             working: self.store.calibration.clone(),
+            ok_at: None,
+            try_session: None,
+            try_target: None,
+            tried: [false; 3],
+            flash: None,
         });
+        self.engine.stop_probe();
         self.engine.reset();
         self.go(Screen::Calibrate);
     }
 
+    fn pointing_style(&self) -> bool {
+        self.store.settings.profile.horizontal == HorizontalStyle::Pointing
+    }
+
     fn cal_advance(&mut self, next: CalStep) {
+        let now = now_us();
         if let Some(c) = self.cal.as_mut() {
             c.step = next;
-            c.since = now_us();
+            c.since = now;
             c.still_since = None;
-            c.probe = AxisProbe::default();
             c.crossed_at = None;
             c.msg = None;
         }
-        if next == CalStep::Done {
-            if let Some(c) = self.cal.as_ref() {
-                self.store.calibration = c.working.clone();
-                self.store.save_calibration();
-                self.engine.set_calibration(c.working.clone());
+        // The next measurement starts once the remote has settled (see update_calibration),
+        // so the end of the previous motion is never measured as the new one.
+        self.engine.stop_probe();
+        if next == CalStep::Try {
+            self.cal_save();
+            let game = Game::new(Mode::Practice, Rules::default(), 0x7E57);
+            let sess = Session::new(game, &self.store);
+            if let Some(c) = self.cal.as_mut() {
+                c.try_session = Some(sess);
+                c.try_target = None;
+                c.tried = [false; 3];
             }
-            self.sfx(Sfx::MenuSelect);
+            self.engine.reset();
+        }
+    }
+
+    /// Mark the current step as recognized: a short flourish, then the next step.
+    fn cal_success(&mut self, next: CalStep) {
+        if let Some(c) = self.cal.as_mut() {
+            c.ok_at = Some(now_us());
+        }
+        self.sfx(Sfx::MenuSelect);
+        self.cal_advance(next);
+    }
+
+    fn cal_save(&mut self) {
+        if let Some(c) = self.cal.as_ref() {
+            self.store.calibration = c.working.clone();
+            self.store.save_calibration();
+            self.engine.set_calibration(c.working.clone());
+        }
+    }
+
+    fn after_swing(&self) -> CalStep {
+        if self.pointing_style() {
+            CalStep::Left
         } else {
-            self.sfx(Sfx::Recognized);
+            CalStep::Try
         }
     }
 
     fn cal_finish(&mut self) {
+        self.cal_save();
+        self.engine.stop_probe();
         let back = self.cal.as_ref().map(|c| c.return_to).unwrap_or(Screen::Menu);
         self.cal = None;
         if back == Screen::Onboard {
-            self.go(Screen::Onboard);
-            self.onboard_try_begin();
+            self.onboard_finish(true);
         } else {
             self.go(back);
         }
@@ -117,234 +165,523 @@ impl App {
         let Some(step) = self.cal.as_ref().map(|c| c.step) else {
             return;
         };
-        match inp {
-            In::Button {
-                b: Button::Back,
-                down: true,
-                ..
-            } => {
-                let next = match step {
-                    CalStep::Neutral => CalStep::Twist,
-                    CalStep::Twist => CalStep::Tilt,
-                    CalStep::Tilt => CalStep::Left,
-                    CalStep::Left | CalStep::Right => CalStep::Done,
-                    CalStep::Done => return self.cal_finish(),
-                };
-                let sensor = self.motion.is_streaming(now_us());
-                let next = if !sensor && matches!(next, CalStep::Twist | CalStep::Tilt) {
-                    CalStep::Left
-                } else {
-                    next
-                };
-                self.cal_advance(next);
-            }
-            In::Button {
-                b: Button::Ok,
-                down: true,
-                ..
-            }
-            | In::Click {
+        let press = match inp {
+            In::Button { b, down: true, .. } => Some(*b),
+            In::Click {
                 left: true,
                 down: true,
                 ..
-            } => match step {
-                CalStep::Left | CalStep::Right => {
-                    let Some(x) = self.engine.aim_x() else {
-                        if let Some(c) = self.cal.as_mut() {
-                            c.msg = Some(S::CAL_RETRY);
-                        }
-                        return;
-                    };
-                    if step == CalStep::Left {
-                        if let Some(c) = self.cal.as_mut() {
-                            c.left = Some(x);
-                        }
-                        self.cal_advance(CalStep::Right);
-                    } else {
-                        let src = self.engine.active_source();
-                        let ok = if let Some(c) = self.cal.as_mut() {
-                            let l = c.left.unwrap_or(x - 0.5);
-                            let mid = (l + x) / 2.0;
-                            let center = if src == Some(AimSource::Sensor) && l < 0.0 && x > 0.0 {
-                                0.0
-                            } else {
-                                mid
-                            };
-                            let r = PointRange {
-                                left: l,
-                                center,
-                                right: x,
-                            };
-                            if r.is_valid() {
-                                match src {
-                                    Some(AimSource::Pointer) => c.working.pointer_range = Some(r),
-                                    _ => c.working.sensor_range = Some(r),
-                                }
-                                true
-                            } else {
-                                c.msg = Some(S::CAL_RETRY);
-                                c.step = CalStep::Left;
-                                false
-                            }
-                        } else {
-                            false
-                        };
-                        if ok {
-                            self.cal_advance(CalStep::Done);
-                        }
-                    }
+            } => Some(Button::Ok),
+            _ => None,
+        };
+        let Some(b) = press else { return };
+        match (step, b) {
+            (CalStep::Try, Button::Back) => {
+                self.start_calibration(self.cal.as_ref().map(|c| c.return_to).unwrap_or(Screen::Menu))
+            }
+            (_, Button::Back) => {
+                // Cancel: keep the previous calibration.
+                let back = self.cal.as_ref().map(|c| c.return_to).unwrap_or(Screen::Menu);
+                self.engine.stop_probe();
+                self.engine.set_calibration(self.store.calibration.clone());
+                self.cal = None;
+                if back == Screen::Onboard {
+                    self.onboard_finish(false);
+                } else {
+                    self.go(back);
                 }
-                CalStep::Done => self.cal_finish(),
-                _ => {}
-            },
+            }
+            (CalStep::Hold, Button::Ok) => self.cal_advance(CalStep::Twist),
+            (CalStep::Twist, Button::Ok) => self.cal_advance(CalStep::Swing),
+            (CalStep::Swing, Button::Ok) => {
+                let n = self.after_swing();
+                self.cal_advance(n)
+            }
+            (CalStep::Left | CalStep::Right, Button::Ok) => self.capture_edge(step),
+            (CalStep::Try, Button::Ok) => self.cal_finish(),
+            (CalStep::Try, Button::Red | Button::Green | Button::Yellow) => {
+                if let Some(c) = self.cal.as_mut() {
+                    let (sign, what) = match b {
+                        Button::Red => (&mut c.working.twist_sign, S::TRY_ROT),
+                        Button::Green => (&mut c.working.yaw_sign, S::TRY_MOVE),
+                        _ => (&mut c.working.pitch_sign, S::TRY_DROP_SHORT),
+                    };
+                    *sign = -*sign;
+                    c.flash = Some((now_us(), format!("{}: {}", what, S::CAL_FLIPPED)));
+                }
+                self.cal_save();
+                self.engine.reset();
+                self.sfx(Sfx::MenuSelect);
+            }
             _ => {}
         }
     }
 
-    pub fn update_calibration(&mut self, now: u64) {
+    fn capture_edge(&mut self, step: CalStep) {
+        let Some(x) = self.engine.aim_x() else {
+            if let Some(c) = self.cal.as_mut() {
+                c.msg = Some(S::CAL_RETRY);
+            }
+            return;
+        };
+        if step == CalStep::Left {
+            if let Some(c) = self.cal.as_mut() {
+                c.left = Some(x);
+            }
+            return self.cal_success(CalStep::Right);
+        }
+        let src = self.engine.active_source();
+        let ok = match self.cal.as_mut() {
+            Some(c) => {
+                let l = c.left.unwrap_or(x - 0.5);
+                let r = PointRange {
+                    left: l,
+                    center: (l + x) / 2.0,
+                    right: x,
+                };
+                if r.is_valid() {
+                    match src {
+                        Some(AimSource::Pointer) => c.working.pointer_range = Some(r),
+                        _ => c.working.sensor_range = Some(r),
+                    }
+                    true
+                } else {
+                    c.msg = Some(S::CAL_RETRY);
+                    c.step = CalStep::Left;
+                    false
+                }
+            }
+            None => false,
+        };
+        if ok {
+            self.cal_success(CalStep::Try);
+        }
+    }
+
+    pub fn update_calibration(&mut self, now: u64, commits: &[luma_input::Commit]) {
         let streaming = self.motion.is_streaming(now);
-        let q = self.engine.last_quat();
         let f = self.engine.debug.last_frame;
-        let Some(c) = self.cal.as_mut() else { return };
-        match c.step {
-            CalStep::Neutral => {
+        let quat = self.engine.last_quat();
+        let min_deg = if self.cal.as_ref().is_some_and(|c| c.step == CalStep::Swing) {
+            6.0
+        } else {
+            25.0
+        };
+        let probe = self
+            .engine
+            .probe()
+            .map(|p| (p.angle_deg(), p.current_deg(), p.axis(min_deg)));
+        let pointing = self.pointing_style();
+        let Some(step) = self.cal.as_ref().map(|c| c.step) else {
+            return;
+        };
+        match step {
+            CalStep::Hold => {
+                let Some(c) = self.cal.as_mut() else { return };
                 if !streaming {
                     if now - c.since > 4_000_000 {
-                        // No sensor: only the pointer range can be calibrated.
-                        self.cal_advance(CalStep::Left);
+                        c.msg = Some(S::CAL_NO_SENSOR);
+                    }
+                    // Pointer-only remotes can still set up pointing or try gestures.
+                    if now - c.since > 6_000_000 && self.pointer.is_some() {
+                        let next = if pointing { CalStep::Left } else { CalStep::Try };
+                        self.cal_advance(next);
                     }
                     return;
                 }
-                let still = f.vel.len() < 0.12 && f.twist_rate_dps.is_none_or(|r| r.abs() < 15.0);
+                c.msg = None;
+                let still = f.vel.len() < 0.18 && f.twist_rate_dps.is_none_or(|r| r.abs() < 20.0);
                 if still {
                     let s0 = *c.still_since.get_or_insert(now);
-                    if now - s0 > 900_000 {
-                        c.working.neutral = q;
+                    if now - s0 > HOLD_MS {
+                        c.working.neutral = quat;
                         let w = c.working.clone();
                         self.engine.set_calibration(w);
-                        self.cal_advance(CalStep::Twist);
+                        self.cal_success(CalStep::Twist);
                     }
                 } else {
                     c.still_since = None;
                 }
             }
-            CalStep::Twist | CalStep::Tilt => {
-                let Some(q) = q else { return };
-                c.probe.push(q);
-                if c.probe.angle_deg() >= 35.0 {
-                    let t0 = *c.crossed_at.get_or_insert(now);
-                    if now - t0 > 250_000 {
-                        let axis = c.probe.axis();
-                        let ok = match (c.step, axis) {
-                            (CalStep::Twist, Some(a)) => {
-                                apply_twist_probe(&mut c.working, a);
-                                true
-                            }
-                            (CalStep::Tilt, Some(a)) => apply_pitch_probe(&mut c.working, a),
-                            _ => false,
-                        };
-                        if ok {
-                            let step = c.step;
-                            let w = c.working.clone();
-                            self.engine.set_calibration(w);
-                            self.cal_advance(if step == CalStep::Twist {
-                                CalStep::Tilt
-                            } else {
-                                CalStep::Left
-                            });
-                        } else {
-                            c.msg = Some(S::CAL_RETRY);
-                            c.probe = AxisProbe::default();
-                            c.crossed_at = None;
+            CalStep::Twist | CalStep::Swing => {
+                let Some((best, current, axis)) = probe else {
+                    // Arm the measurement after a calm moment (or 1.5 s at the latest).
+                    let still = f.vel.len() < 0.25 && f.twist_rate_dps.is_none_or(|r| r.abs() < 30.0);
+                    let Some(c) = self.cal.as_mut() else { return };
+                    if still {
+                        let s0 = *c.still_since.get_or_insert(now);
+                        if now - s0 > 200_000 {
+                            c.still_since = None;
+                            self.engine.start_probe();
                         }
+                    } else {
+                        c.still_since = None;
                     }
-                } else if now - c.since > 12_000_000 && c.msg.is_none() {
-                    c.msg = Some(S::CAL_RETRY);
+                    if now - c.since > 1_500_000 {
+                        self.engine.start_probe();
+                    }
+                    return;
+                };
+                let target = if step == CalStep::Twist {
+                    TWIST_TARGET_DEG
+                } else {
+                    SWING_TARGET_DEG
+                };
+                let Some(c) = self.cal.as_mut() else { return };
+                if best < target {
+                    if now - c.since > 12_000_000 && c.msg.is_none() {
+                        c.msg = Some(S::CAL_RETRY);
+                    }
+                    return;
+                }
+                // Decide once the motion turns back (or after a short moment at the peak).
+                let t0 = *c.crossed_at.get_or_insert(now);
+                if current > best * 0.7 && now - t0 < 400_000 {
+                    return;
+                }
+                let applied = match (step, axis) {
+                    (CalStep::Twist, Some(a)) => {
+                        apply_twist_probe(&mut c.working, a);
+                        true
+                    }
+                    (CalStep::Swing, Some(a)) => {
+                        let ok = apply_swing_probe(&mut c.working, a);
+                        if !ok {
+                            c.msg = Some(S::CAL_TWISTED);
+                        }
+                        ok
+                    }
+                    _ => {
+                        c.msg = Some(S::CAL_RETRY);
+                        false
+                    }
+                };
+                if applied {
+                    let w = c.working.clone();
+                    self.engine.set_calibration(w);
+                    let next = if step == CalStep::Twist {
+                        CalStep::Swing
+                    } else {
+                        self.after_swing()
+                    };
+                    self.cal_success(next);
+                } else {
+                    c.crossed_at = None;
+                    c.since = now;
+                    self.engine.stop_probe();
                 }
             }
-            CalStep::Done if now - c.since > 1_400_000 => self.cal_finish(),
+            CalStep::Try => self.update_try(now, commits),
             _ => {}
         }
     }
 
+    fn update_try(&mut self, now: u64, commits: &[luma_input::Commit]) {
+        let look = self.look();
+        let hyst = self.store.thresholds.point_hysteresis_cols;
+        let u = if self.pointing_style() {
+            let range = self.default_range();
+            self.engine.aim_column(COLS as f32, range)
+        } else {
+            None
+        };
+        let Some(c) = self.cal.as_mut() else { return };
+        let Some(s) = c.try_session.as_mut() else { return };
+        let mut sounds = Vec::new();
+        for cm in commits {
+            let (a, idx) = match cm.gesture {
+                Gesture::RotateCw => (Action::RotateCw, 1),
+                Gesture::RotateCcw => (Action::RotateCcw, 1),
+                Gesture::MoveLeft => (Action::MoveLeft, 0),
+                Gesture::MoveRight => (Action::MoveRight, 0),
+                Gesture::HardDrop => (Action::HardDrop, 2),
+            };
+            s.game.apply(a);
+            c.tried[idx] = true;
+            c.flash = Some((now, cm.gesture.label().to_owned()));
+            sounds.push(Sfx::Recognized);
+        }
+        if let Some(u) = u {
+            let p = s.game.active;
+            let t = target_left_column(u, view::piece_width(&p), COLS, c.try_target, hyst);
+            if c.try_target.is_some_and(|old| old != t) {
+                c.tried[0] = true;
+            }
+            c.try_target = Some(t);
+            for _ in 0..2 {
+                let lo = s.game.active.column_span().0;
+                if lo == t
+                    || !s.game.apply(if lo < t {
+                        Action::MoveRight
+                    } else {
+                        Action::MoveLeft
+                    })
+                {
+                    break;
+                }
+            }
+        }
+        for e in s.game.drain_events() {
+            s.fx.on_event(&e, now, &look);
+            if matches!(e, luma_core::Event::Spawned) {
+                c.try_target = None;
+            }
+        }
+        for snd in sounds {
+            self.audio.play(snd);
+        }
+    }
+
+    /// Screen position of the live aim dot (pointing steps).
+    fn aim_dot(&self) -> Option<(i32, i32)> {
+        if self.engine.active_source() == Some(AimSource::Pointer) {
+            return self.pointer;
+        }
+        let x = self.engine.aim_x()?;
+        let y = self.engine.debug.last_frame.abs.map(|a| a.y).unwrap_or(0.0);
+        Some((
+            (W / 2 + (x * 1080.0) as i32).clamp(0, W),
+            (H / 2 + (y * 1080.0) as i32).clamp(0, H),
+        ))
+    }
+
     pub fn draw_calibration(&mut self, g: &mut Gfx, now: u64) {
-        let Some(c) = self.cal.as_ref() else { return };
-        g.text(S::CAL_TITLE, 220, 90, 54.0, Face::Light, theme::TEXT);
-        let steps = [
-            CalStep::Neutral,
-            CalStep::Twist,
-            CalStep::Tilt,
-            CalStep::Left,
-            CalStep::Right,
-        ];
-        for (i, s) in steps.iter().enumerate() {
-            let on = *s == c.step;
-            let done = steps.iter().position(|x| *x == c.step).unwrap_or(5) > i || c.step == CalStep::Done;
-            let col = if on {
+        let Some(step) = self.cal.as_ref().map(|c| c.step) else {
+            return;
+        };
+        if step == CalStep::Try {
+            return self.draw_try(g, now);
+        }
+        let pointing = self.pointing_style();
+        let steps: Vec<CalStep> = if pointing {
+            vec![
+                CalStep::Hold,
+                CalStep::Twist,
+                CalStep::Swing,
+                CalStep::Left,
+                CalStep::Try,
+            ]
+        } else {
+            vec![CalStep::Hold, CalStep::Twist, CalStep::Swing, CalStep::Try]
+        };
+        let idx = steps
+            .iter()
+            .position(|s| *s == step || (step == CalStep::Right && *s == CalStep::Left))
+            .unwrap_or(0);
+        let c = self.cal.as_ref().unwrap();
+        let since_ms = now.saturating_sub(c.since) as f32 / 1000.0;
+        let enter = (since_ms / 280.0).min(1.0);
+        // Header: title and step progress.
+        g.text(S::CAL_TITLE, 160, 90, 30.0, Face::Semi, theme::TEXT_FAINT);
+        for (i, _) in steps.iter().enumerate() {
+            let col = if i < idx {
+                alpha(theme::CYAN, 0.55)
+            } else if i == idx {
                 theme::CYAN
-            } else if done {
-                theme::TEXT_DIM
             } else {
                 sdl2::pixels::Color::RGB(40, 44, 52)
             };
-            g.round(Rect::new(220 + i as i32 * 70, 180, 50, 6), 3, col);
+            let w = if i == idx { 90 } else { 46 };
+            let x = 160
+                + steps[..i]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, _)| if j == idx { 104 } else { 60 })
+                    .sum::<i32>();
+            g.round(Rect::new(x, 146, w, 8), 4, col);
         }
-        let text = match c.step {
-            CalStep::Neutral => S::CAL_NEUTRAL,
-            CalStep::Twist => S::CAL_TWIST,
-            CalStep::Tilt => S::CAL_TILT,
-            CalStep::Left => S::CAL_LEFT,
-            CalStep::Right => S::CAL_RIGHT,
-            CalStep::Done => S::CAL_DONE,
+        let (title, body) = match step {
+            CalStep::Hold => (S::CAL_HOLD_T, S::CAL_HOLD),
+            CalStep::Twist => (S::CAL_TWIST_T, S::CAL_TWIST),
+            CalStep::Swing => (S::CAL_SWING_T, S::CAL_SWING),
+            CalStep::Left => (S::CAL_LEFT_T, S::CAL_LEFT),
+            _ => (S::CAL_RIGHT_T, S::CAL_RIGHT),
         };
-        g.paragraph(text, 220, 240, 600, 34.0, theme::TEXT);
+        // Text slides in with each new step.
+        let slide = ((1.0 - enter) * 40.0) as i32;
+        g.text(
+            &format!("{} {} / {}", S::CAL_STEP, idx + 1, steps.len()),
+            160 + slide,
+            200,
+            26.0,
+            Face::Regular,
+            alpha(theme::TEXT_DIM, enter),
+        );
+        g.text(
+            title,
+            160 + slide,
+            250,
+            64.0,
+            Face::Light,
+            alpha(theme::TEXT, enter),
+        );
+        g.paragraph(body, 160 + slide, 360, 640, 34.0, alpha(theme::TEXT_DIM, enter));
         if let Some(m) = c.msg {
-            g.paragraph(m, 220, 420, 600, 28.0, theme::WARN);
+            let pulse = 0.75 + 0.25 * (now as f32 / 1e6 * 4.0).sin();
+            g.paragraph(m, 160, 620, 640, 28.0, alpha(theme::WARN, pulse));
         }
-        g.text(S::CAL_SKIP_HINT, 220, 980, 24.0, Face::Regular, theme::TEXT_FAINT);
-        // Live feedback on the right.
-        match c.step {
-            CalStep::Neutral => {
+        let keys = if matches!(step, CalStep::Left | CalStep::Right) {
+            S::CAL_KEYS_EDGE
+        } else {
+            S::CAL_KEYS_MEASURE
+        };
+        g.text(keys, 160, H - 110, 26.0, Face::Regular, theme::TEXT_FAINT);
+        // Success flourish from the previous step.
+        if let Some(t0) = c.ok_at {
+            let a = 1.0 - now.saturating_sub(t0) as f32 / 900_000.0;
+            if a > 0.0 {
+                g.text(S::CAL_GOT_IT, 160, 720, 40.0, Face::Semi, alpha(theme::OK, a));
+            }
+        }
+        // Right side: illustration and live gauge.
+        let (cx, cy) = (1340, 440);
+        match step {
+            CalStep::Hold => {
+                illus::draw(g, Illus::Still, cx, cy, 1.6, now);
                 let p = c
                     .still_since
-                    .map(|s| ((now - s) as f32 / 900_000.0).min(1.0))
+                    .map(|s| (now.saturating_sub(s) as f32 / HOLD_MS as f32).min(1.0))
                     .unwrap_or(0.0);
-                draw_ring(g, 1300, 500, 120, p);
-                if !self.motion.is_streaming(now) {
-                    g.text_centered(S::DETECTING, 1300, 700, 28.0, Face::Regular, theme::TEXT_DIM);
-                }
+                draw_ring(g, cx, cy, 230, p, now);
+                let wob = self.engine.debug.last_frame.vel.len();
+                let label = if self.motion.is_streaming(now) {
+                    format!("{}  {:.0}%", S::CAL_HOLD_LIVE, p * 100.0)
+                } else {
+                    S::DETECTING.to_owned()
+                };
+                g.text_centered(&label, cx, cy + 270, 28.0, Face::Regular, theme::TEXT_DIM);
+                // Live steadiness bar: how much the remote is moving right now.
+                let w = ((wob / 0.5).min(1.0) * 300.0) as u32;
+                g.round(
+                    Rect::new(cx - 150, cy + 320, 300, 6),
+                    3,
+                    sdl2::pixels::Color::RGB(30, 33, 40),
+                );
+                g.round(
+                    Rect::new(cx - 150, cy + 320, w.max(6), 6),
+                    3,
+                    alpha(theme::CORAL, 0.8),
+                );
             }
-            CalStep::Twist | CalStep::Tilt => {
-                let p = (c.probe.angle_deg() / 35.0).min(1.0);
-                draw_ring(g, 1300, 500, 120, p);
-                let kind = if c.step == CalStep::Twist { 0 } else { 2 };
-                if kind == 0 {
-                    view::draw_illustration(g, 0, 1300, 500, now);
-                }
+            CalStep::Twist => {
+                illus::draw(g, Illus::Twist, cx, cy - 20, 1.7, now);
+                let (best, cur) = self
+                    .engine
+                    .probe()
+                    .map(|p| (p.angle_deg(), p.current_deg()))
+                    .unwrap_or((0.0, 0.0));
+                draw_gauge(g, cx, cy + 290, cur.max(0.0), best, TWIST_TARGET_DEG, now);
+            }
+            CalStep::Swing => {
+                illus::draw(g, Illus::Swing, cx, cy - 20, 1.6, now);
+                let (best, cur) = self
+                    .engine
+                    .probe()
+                    .map(|p| (p.angle_deg(), p.current_deg()))
+                    .unwrap_or((0.0, 0.0));
+                draw_gauge(g, cx, cy + 290, cur.max(0.0), best, SWING_TARGET_DEG, now);
             }
             CalStep::Left | CalStep::Right => {
-                // Board outline with the edge to point at.
-                let r = Rect::new(BOARD_X + 300, BOARD_Y, BOARD_W as u32, view::BOARD_H as u32);
+                let r = Rect::new(BOARD_X + 380, BOARD_Y, BOARD_W as u32, BOARD_H as u32);
                 g.round_outline(r, 14, theme::LINE, 2);
-                let ex = if c.step == CalStep::Left { r.x() } else { r.right() };
+                let ex = if step == CalStep::Left { r.x() } else { r.right() };
+                let pulse = 0.6 + 0.4 * (now as f32 / 1e6 * 5.0).sin();
                 g.round(
-                    Rect::new(ex - 3, r.y(), 6, r.height()),
-                    3,
-                    alpha(theme::CYAN, 0.8),
+                    Rect::new(ex - 4, r.y(), 8, r.height()),
+                    4,
+                    alpha(theme::CYAN, pulse),
                 );
-                if let Some(x) = self.engine.aim_x() {
-                    let u = x; // live aim (screen heights)
-                    let px = if self.engine.active_source() == Some(AimSource::Pointer) {
-                        (u * 1080.0) as i32
-                    } else {
-                        r.center().x() + (u * 1080.0 * 0.8) as i32
-                    };
-                    let dst = Rect::new(px - 10, r.y() + r.height() as i32 / 2 - 10, 20, 20);
-                    let canvas = &mut g.canvas;
-                    Gfx::tinted(&mut g.tex.dot, canvas, dst, theme::TEXT, false);
+                if let Some((px, py)) = self.aim_dot() {
+                    draw_cursor(g, px, py.clamp(r.y() + 20, r.bottom() - 20), 1.4, now);
                 }
             }
-            CalStep::Done => draw_ring(g, 1300, 500, 120, 1.0),
+            CalStep::Try => {}
+        }
+    }
+
+    fn draw_try(&mut self, g: &mut Gfx, now: u64) {
+        let look = self.look();
+        let Some(c) = self.cal.as_mut() else { return };
+        if let Some(s) = c.try_session.as_mut() {
+            let input = view::BoardInput {
+                game: &s.game,
+                look,
+                now,
+                target: c.try_target.map(|t| (t, view::piece_width(&s.game.active), true)),
+                best: None,
+                hide_hud: true,
+            };
+            view::draw_game(g, &mut s.fx, &input);
+        }
+        let tried = c.tried;
+        let flash = c.flash.clone();
+        g.text(S::CAL_TRY_T, 120, 120, 56.0, Face::Light, theme::TEXT);
+        g.paragraph(S::CAL_TRY, 120, 210, 520, 28.0, theme::TEXT_DIM);
+        let p = self.store.settings.profile;
+        let rows: [(Illus, &str); 3] = [
+            (
+                match p.horizontal {
+                    HorizontalStyle::Swing => Illus::Swing,
+                    HorizontalStyle::Pointing => Illus::Point,
+                    HorizontalStyle::Flick => Illus::Flick,
+                },
+                S::TRY_MOVE,
+            ),
+            (
+                match p.rotation {
+                    RotationStyle::Twist => Illus::Twist,
+                    RotationStyle::Circle => Illus::Circle,
+                },
+                S::TRY_ROT,
+            ),
+            (Illus::Drop, S::TRY_DROP_SHORT),
+        ];
+        for (i, (il, label)) in rows.iter().enumerate() {
+            let y = 360 + i as i32 * 190;
+            let card = Rect::new(110, y, 540, 170);
+            g.round(card, 22, if tried[i] { theme::PANEL_HI } else { theme::PANEL });
+            if tried[i] {
+                g.round_outline(card, 22, alpha(theme::OK, 0.7), 2);
+            }
+            illus::draw(g, *il, 230, y + 90, 0.62, now);
+            g.text(
+                label,
+                360,
+                y + 58,
+                32.0,
+                Face::Regular,
+                if tried[i] { theme::TEXT } else { theme::TEXT_DIM },
+            );
+            if tried[i] {
+                g.text("✓", 600, y + 52, 40.0, Face::Semi, theme::OK);
+            }
+        }
+        // Recognized-gesture flash next to the board.
+        if let Some((t0, text)) = flash {
+            let a = 1.0 - now.saturating_sub(t0) as f32 / 1_200_000.0;
+            if a > 0.0 {
+                let rise = ((1.0 - a) * 30.0) as i32;
+                g.text_centered(
+                    &text,
+                    BOARD_X + BOARD_W / 2,
+                    BOARD_Y + BOARD_H / 3 - rise,
+                    40.0,
+                    Face::Semi,
+                    alpha(theme::CYAN, a),
+                );
+            }
+        }
+        let x = BOARD_X + BOARD_W + 80;
+        let mut y = 380;
+        for (line, c) in [
+            (S::CAL_DONE_BTN, theme::CYAN),
+            (S::CAL_FLIP_TWIST, theme::TEXT_DIM),
+            (S::CAL_FLIP_SIDE, theme::TEXT_DIM),
+            (S::CAL_FLIP_DROP, theme::TEXT_DIM),
+            (S::CAL_REDO, theme::TEXT_FAINT),
+        ] {
+            g.text(line, x, y, 28.0, Face::Regular, c);
+            y += 56;
         }
     }
 
@@ -355,11 +692,6 @@ impl App {
             step: OnbStep::Welcome,
             since: now_us(),
             row: 0,
-            tried: [false; 3],
-            session: None,
-            target: None,
-            last_col: None,
-            moved: 0.0,
         });
         self.go(Screen::Onboard);
     }
@@ -376,18 +708,6 @@ impl App {
         }
     }
 
-    fn onboard_try_begin(&mut self) {
-        let game = Game::new(Mode::Practice, Rules::default(), 0x7E57);
-        let sess = Session::new(game, &self.store);
-        if let Some(o) = self.onb.as_mut() {
-            o.step = OnbStep::Try;
-            o.since = now_us();
-            o.session = Some(sess);
-            o.tried = [false; 3];
-        }
-        self.engine.reset();
-    }
-
     fn welcome_items(&self) -> Vec<Item> {
         let detected = self.onb.as_ref().is_some_and(|o| now_us() - o.since > 2_500_000)
             || self.motion.is_streaming(now_us());
@@ -402,7 +722,9 @@ impl App {
         let Some(step) = self.onb.as_ref().map(|o| o.step) else {
             return;
         };
-        let Some(u) = crate::app::to_ui(inp) else { return };
+        let Some(u) = crate::app::to_ui(inp) else {
+            return;
+        };
         match step {
             OnbStep::Welcome => {
                 let items = self.welcome_items();
@@ -416,6 +738,7 @@ impl App {
                         self.settings_changed();
                         if let Some(o) = self.onb.as_mut() {
                             o.step = OnbStep::Style;
+                            o.since = now_us();
                             o.row = 0;
                         }
                         self.sfx(Sfx::MenuSelect);
@@ -437,16 +760,32 @@ impl App {
                         if let Some(o) = self.onb.as_mut() {
                             o.row = o.row.saturating_sub(1);
                         }
+                        self.sfx(Sfx::MenuMove);
                     }
                     UiIn::Press(Button::Down) => {
                         if let Some(o) = self.onb.as_mut() {
                             o.row = (o.row + 1).min(2);
                         }
+                        self.sfx(Sfx::MenuMove);
                     }
                     UiIn::Press(Button::Left) | UiIn::Press(Button::Right) => {
-                        let left = u == UiIn::Press(Button::Left);
-                        self.choose_style(row, if left { 0 } else { 1 }, twist_ok);
+                        let d = if u == UiIn::Press(Button::Left) { -1 } else { 1 };
+                        self.step_style(row, d, twist_ok);
                         self.sfx(Sfx::MenuMove);
+                    }
+                    UiIn::Pointer(x, y) => {
+                        for (r, _, rect) in style_cards() {
+                            if rect.contains_point((x, y)) {
+                                if let Some(o) = self.onb.as_mut() {
+                                    o.row = r;
+                                }
+                            }
+                        }
+                        if continue_rect().contains_point((x, y)) {
+                            if let Some(o) = self.onb.as_mut() {
+                                o.row = 2;
+                            }
+                        }
                     }
                     UiIn::Click(x, y) => {
                         for (r, col, rect) in style_cards() {
@@ -468,17 +807,28 @@ impl App {
                     UiIn::Press(Button::Back) => {
                         if let Some(o) = self.onb.as_mut() {
                             o.step = OnbStep::Welcome;
+                            o.since = now_us();
                         }
                     }
                     _ => {}
                 }
             }
-            OnbStep::Try => match u {
-                UiIn::Press(Button::Ok) | UiIn::Click(..) => self.onboard_finish(true),
-                UiIn::Press(Button::Back) => self.onboard_finish(false),
-                _ => {}
-            },
         }
+    }
+
+    fn step_style(&mut self, row: usize, d: i32, twist_ok: bool) {
+        let p = self.store.settings.profile;
+        let cur = if row == 0 {
+            (p.rotation == RotationStyle::Circle) as i32
+        } else {
+            match p.horizontal {
+                HorizontalStyle::Swing => 0,
+                HorizontalStyle::Pointing => 1,
+                HorizontalStyle::Flick => 2,
+            }
+        };
+        let n = if row == 0 { 2 } else { 3 };
+        self.choose_style(row, (cur + d).clamp(0, n - 1) as usize, twist_ok);
     }
 
     fn choose_style(&mut self, row: usize, col: usize, twist_ok: bool) {
@@ -490,112 +840,28 @@ impl App {
                 RotationStyle::Circle
             };
         } else if row == 1 {
-            p.horizontal = if col == 0 {
-                HorizontalStyle::Pointing
-            } else {
-                HorizontalStyle::Flick
+            p.horizontal = match col {
+                0 => HorizontalStyle::Swing,
+                1 => HorizontalStyle::Pointing,
+                _ => HorizontalStyle::Flick,
             };
         }
         self.settings_changed();
     }
 
-    pub fn update_onboarding(&mut self, now: u64, commits: &[luma_input::Commit]) {
-        let look = self.look();
-        let pointing = self.store.settings.profile.horizontal == HorizontalStyle::Pointing;
-        let u = if pointing {
-            let range = PointRange {
-                left: -0.32,
-                center: 0.0,
-                right: 0.32,
-            };
-            let range = match self.engine.active_source() {
-                Some(AimSource::Pointer) => {
-                    let l = BOARD_X as f32 / 1080.0;
-                    let r = (BOARD_X + BOARD_W) as f32 / 1080.0;
-                    PointRange {
-                        left: l,
-                        center: (l + r) / 2.0,
-                        right: r,
-                    }
-                }
-                _ => range,
-            };
-            self.engine.aim_column(COLS as f32, range)
-        } else {
-            None
-        };
-        let hyst = self.store.thresholds.point_hysteresis_cols;
-        let Some(o) = self.onb.as_mut() else { return };
-        if o.step != OnbStep::Try {
-            return;
-        }
-        let Some(s) = o.session.as_mut() else { return };
-        let mut sounds = Vec::new();
-        for c in commits {
-            let a = match c.gesture {
-                Gesture::RotateCw => Action::RotateCw,
-                Gesture::RotateCcw => Action::RotateCcw,
-                Gesture::MoveLeft => Action::MoveLeft,
-                Gesture::MoveRight => Action::MoveRight,
-                Gesture::HardDrop => Action::HardDrop,
-            };
-            s.game.apply(a);
-            match c.gesture {
-                Gesture::RotateCw | Gesture::RotateCcw => o.tried[1] = true,
-                Gesture::MoveLeft | Gesture::MoveRight => o.tried[0] = true,
-                Gesture::HardDrop => o.tried[2] = true,
-            }
-            sounds.push(Sfx::Recognized);
-        }
-        if let Some(u) = u {
-            if let Some(l) = o.last_col {
-                o.moved += (u - l).abs();
-                if o.moved > 2.5 {
-                    o.tried[0] = true;
-                }
-            }
-            o.last_col = Some(u);
-            let p = s.game.active;
-            let w = view::piece_width(&p);
-            let t = target_left_column(u, w, COLS, o.target, hyst);
-            o.target = Some(t);
-            for _ in 0..2 {
-                let lo = s.game.active.column_span().0;
-                if lo == t
-                    || !s.game.apply(if lo < t {
-                        Action::MoveRight
-                    } else {
-                        Action::MoveLeft
-                    })
-                {
-                    break;
-                }
-            }
-        }
-        for e in s.game.drain_events() {
-            s.fx.on_event(&e, now, &look);
-            if matches!(e, luma_core::Event::Spawned) {
-                o.target = None;
-            }
-        }
-        for snd in sounds {
-            self.audio.play(snd);
-        }
-    }
-
     pub fn draw_onboarding(&mut self, g: &mut Gfx, now: u64) {
-        let Some(step) = self.onb.as_ref().map(|o| o.step) else {
+        let Some((step, since)) = self.onb.as_ref().map(|o| (o.step, o.since)) else {
             return;
         };
+        let enter = (now.saturating_sub(since) as f32 / 350_000.0).min(1.0);
         match step {
             OnbStep::Welcome => {
-                crate::screens::draw_brand(g, now, 1.0);
-                g.text(S::WELCOME, 220, 330, 50.0, Face::Light, theme::TEXT);
-                let since = self.onb.as_ref().map(|o| now - o.since).unwrap_or(0);
+                crate::screens::draw_brand(g, now, enter);
+                g.text(S::WELCOME, 220, 330, 50.0, Face::Light, alpha(theme::TEXT, enter));
                 let streaming = self.motion.is_streaming(now);
                 let status = if streaming {
                     S::MOTION_FOUND
-                } else if since < 2_500_000 {
+                } else if now - since < 2_500_000 {
                     S::DETECTING
                 } else if self.pointer.is_some() {
                     S::MOTION_POINTER_ONLY
@@ -605,20 +871,33 @@ impl App {
                 g.paragraph(status, 220, 420, 900, 30.0, theme::TEXT_DIM);
                 let items = self.welcome_items();
                 self.list.draw(g, &items, 220, 560, 640, 4);
+                // Ambient preview of the twist on the right.
+                illus::draw(g, Illus::Twist, 1450, 560, 1.8, now);
             }
             OnbStep::Style => {
-                g.text(S::CHOOSE_STYLE, 220, 90, 50.0, Face::Light, theme::TEXT);
+                g.text(
+                    S::CHOOSE_STYLE,
+                    160,
+                    70,
+                    50.0,
+                    Face::Light,
+                    alpha(theme::TEXT, enter),
+                );
                 let p = self.store.settings.profile;
                 let row = self.onb.as_ref().map(|o| o.row).unwrap_or(0);
                 let twist_ok = !self.motion.is_real() || self.motion.is_streaming(now);
-                let labels = [[S::ROT_TWIST, S::ROT_CIRCLE], [S::SIDE_POINT, S::SIDE_FLICK]];
-                g.text(S::ROTATION, 220, 210, 26.0, Face::Semi, theme::TEXT_FAINT);
-                g.text(S::SIDEWAYS, 220, 560, 26.0, Face::Semi, theme::TEXT_FAINT);
+                g.text(S::ROTATION, 160, 170, 26.0, Face::Semi, theme::TEXT_FAINT);
+                g.text(S::SIDEWAYS, 160, 545, 26.0, Face::Semi, theme::TEXT_FAINT);
                 for (r, col, rect) in style_cards() {
                     let selected = if r == 0 {
                         (p.rotation == RotationStyle::Twist) == (col == 0)
                     } else {
-                        (p.horizontal == HorizontalStyle::Pointing) == (col == 0)
+                        matches!(
+                            (p.horizontal, col),
+                            (HorizontalStyle::Swing, 0)
+                                | (HorizontalStyle::Pointing, 1)
+                                | (HorizontalStyle::Flick, 2)
+                        )
                     };
                     g.round(rect, 24, if selected { theme::PANEL_HI } else { theme::PANEL });
                     if selected {
@@ -629,27 +908,34 @@ impl App {
                             3,
                         );
                     }
-                    let kind = (r * 2 + col) as u8;
-                    view::draw_illustration(g, kind, rect.center().x(), rect.y() + 120, now);
+                    let (il, label, hint) = match (r, col) {
+                        (0, 0) => (Illus::Twist, S::ROT_TWIST, ""),
+                        (0, _) => (Illus::Circle, S::ROT_CIRCLE, ""),
+                        (_, 0) => (Illus::Swing, S::SIDE_SWING, S::SIDE_SWING_HINT),
+                        (_, 1) => (Illus::Point, S::SIDE_POINT, S::SIDE_POINT_HINT),
+                        _ => (Illus::Flick, S::SIDE_FLICK, S::SIDE_FLICK_HINT),
+                    };
+                    // Only the selected card animates; the others show a still frame.
+                    let t = if selected { now } else { 300_000 };
+                    illus::draw(g, il, rect.center().x(), rect.y() + 145, 0.85, t);
                     let disabled = r == 0 && col == 0 && !twist_ok;
                     g.text_centered(
-                        labels[r][col],
+                        label,
                         rect.center().x(),
-                        rect.bottom() - 70,
+                        rect.bottom() - 74,
                         30.0,
                         Face::Regular,
                         if disabled { theme::TEXT_FAINT } else { theme::TEXT },
                     );
-                    if disabled {
-                        g.text_centered(
-                            S::UNAVAILABLE_TWIST,
-                            rect.center().x(),
-                            rect.bottom() - 34,
-                            20.0,
-                            Face::Regular,
-                            theme::TEXT_FAINT,
-                        );
-                    }
+                    let hint = if disabled { S::UNAVAILABLE_TWIST } else { hint };
+                    g.text_centered(
+                        hint,
+                        rect.center().x(),
+                        rect.bottom() - 38,
+                        20.0,
+                        Face::Regular,
+                        theme::TEXT_FAINT,
+                    );
                 }
                 let cr = continue_rect();
                 if row == 2 {
@@ -665,84 +951,36 @@ impl App {
                     theme::TEXT,
                 );
             }
-            OnbStep::Try => {
-                let look = self.look();
-                if let Some(o) = self.onb.as_mut() {
-                    if let Some(s) = o.session.as_mut() {
-                        let input = view::BoardInput {
-                            game: &s.game,
-                            look,
-                            now,
-                            target: None,
-                            best: None,
-                        };
-                        view::draw_game(g, &mut s.fx, &input);
-                    }
-                }
-                let tried = self.onb.as_ref().map(|o| o.tried).unwrap_or_default();
-                g.text(S::TRY_TITLE, 120, 120, 44.0, Face::Light, theme::TEXT);
-                let lines = [S::TRY_SIDEWAYS, S::TRY_ROTATE, S::TRY_DROP];
-                for (i, l) in lines.iter().enumerate() {
-                    let y = 220 + i as i32 * 70;
-                    let c = if tried[i] { theme::OK } else { theme::TEXT_FAINT };
-                    g.round(Rect::new(120, y + 8, 22, 22), 11, c);
-                    g.paragraph(
-                        l,
-                        160,
-                        y,
-                        380,
-                        26.0,
-                        if tried[i] { theme::TEXT } else { theme::TEXT_DIM },
-                    );
-                }
-                g.text(
-                    &format!("OK  {}", S::START_PLAYING),
-                    120,
-                    900,
-                    28.0,
-                    Face::Regular,
-                    theme::CYAN,
-                );
-                g.text(
-                    &format!("Back  {}", S::SKIP),
-                    120,
-                    950,
-                    24.0,
-                    Face::Regular,
-                    theme::TEXT_FAINT,
-                );
-            }
         }
-        let _ = W;
     }
 }
 
 fn style_cards() -> Vec<(usize, usize, Rect)> {
     let mut v = Vec::new();
-    for r in 0..2 {
-        for c in 0..2 {
-            v.push((
-                r,
-                c,
-                Rect::new(220 + c as i32 * 440, 250 + r as i32 * 350, 400, 290),
-            ));
-        }
+    for c in 0..2 {
+        v.push((0, c, Rect::new(160 + c as i32 * 420, 205, 390, 320)));
+    }
+    for c in 0..3 {
+        v.push((1, c, Rect::new(160 + c as i32 * 420, 580, 390, 320)));
     }
     v
 }
 
 fn continue_rect() -> Rect {
-    Rect::new(1200, 900, 420, 60)
+    Rect::new(W - 160 - 420, 960, 420, 60)
 }
 
-fn draw_ring(g: &mut Gfx, cx: i32, cy: i32, r: i32, p: f32) {
-    let n = 48;
+/// Dotted progress ring that breathes slightly while waiting.
+fn draw_ring(g: &mut Gfx, cx: i32, cy: i32, r: i32, p: f32, now: u64) {
+    let n = 60;
+    let breathe = 1.0 + 0.02 * (now as f32 / 1e6 * 2.0).sin();
     for i in 0..n {
         let a = i as f32 / n as f32 * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2;
         let on = (i as f32) < p * n as f32;
-        let x = cx + (a.cos() * r as f32) as i32;
-        let y = cy + (a.sin() * r as f32) as i32;
-        let s = if on { 14 } else { 8 };
+        let rr = r as f32 * breathe;
+        let x = cx + (a.cos() * rr) as i32;
+        let y = cy + (a.sin() * rr) as i32;
+        let s = if on { 14 } else { 7 };
         let col = if on {
             theme::CYAN
         } else {
@@ -752,4 +990,76 @@ fn draw_ring(g: &mut Gfx, cx: i32, cy: i32, r: i32, p: f32) {
         let canvas = &mut g.canvas;
         Gfx::tinted(&mut g.tex.dot, canvas, dst, col, on);
     }
+}
+
+/// Horizontal gauge: current excursion (bright), best so far (dim) and the target tick.
+fn draw_gauge(g: &mut Gfx, cx: i32, y: i32, current: f32, best: f32, target: f32, now: u64) {
+    let w = 520;
+    let x0 = cx - w / 2;
+    let full = target * 1.6;
+    let px = |v: f32| x0 + ((v / full).clamp(0.0, 1.0) * w as f32) as i32;
+    g.round(
+        Rect::new(x0, y, w as u32, 12),
+        6,
+        sdl2::pixels::Color::RGB(30, 33, 40),
+    );
+    g.round(
+        Rect::new(x0, y, (px(best) - x0).max(12) as u32, 12),
+        6,
+        alpha(theme::CYAN, 0.3),
+    );
+    g.round(
+        Rect::new(x0, y, (px(current) - x0).max(12) as u32, 12),
+        6,
+        theme::CYAN,
+    );
+    let tx = px(target);
+    let reached = best >= target;
+    let pulse = if reached {
+        1.0
+    } else {
+        0.6 + 0.4 * (now as f32 / 1e6 * 4.0).sin()
+    };
+    g.round(
+        Rect::new(tx - 2, y - 14, 4, 40),
+        2,
+        alpha(if reached { theme::OK } else { theme::TEXT }, pulse),
+    );
+    g.text_centered(
+        &format!("{:.0}°", best.max(current)),
+        cx,
+        y + 30,
+        26.0,
+        Face::Regular,
+        theme::TEXT_DIM,
+    );
+}
+
+/// The app's own pointer: a soft ring with a bright centre.
+pub fn draw_cursor(g: &mut Gfx, x: i32, y: i32, s: f32, now: u64) {
+    let pulse = 1.0 + 0.06 * (now as f32 / 1e6 * 3.0).sin();
+    let r = (34.0 * s * pulse) as i32;
+    let canvas = &mut g.canvas;
+    Gfx::tinted(
+        &mut g.tex.glow,
+        canvas,
+        Rect::new(x - r * 2, y - r * 2, (r * 4) as u32, (r * 4) as u32),
+        alpha(theme::CYAN, 0.22),
+        true,
+    );
+    let d = (18.0 * s) as i32;
+    Gfx::tinted(
+        &mut g.tex.dot,
+        canvas,
+        Rect::new(x - d, y - d, (d * 2) as u32, (d * 2) as u32),
+        theme::CYAN,
+        true,
+    );
+    Gfx::tinted(
+        &mut g.tex.dot,
+        canvas,
+        Rect::new(x - d / 3, y - d / 3, (d * 2 / 3) as u32, (d * 2 / 3) as u32),
+        theme::TEXT,
+        false,
+    );
 }

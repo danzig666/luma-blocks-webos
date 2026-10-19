@@ -186,6 +186,7 @@ impl App {
                         Item::choice(
                             S::SIDEWAYS,
                             match p.horizontal {
+                                HorizontalStyle::Swing => S::SIDE_SWING,
                                 HorizontalStyle::Pointing => S::SIDE_POINT,
                                 HorizontalStyle::Flick => S::SIDE_FLICK,
                             },
@@ -289,6 +290,13 @@ impl App {
     }
 
     pub fn screen_input(&mut self, u: UiIn) {
+        // The results appear after the board has greyed out; a drop press still in flight
+        // must not start a new game.
+        if self.screen == Screen::Over
+            && crate::platform::now_us().saturating_sub(self.screen_since) < 1_100_000
+        {
+            return;
+        }
         if self.screen == Screen::Developer {
             return self.developer_input(u);
         }
@@ -462,10 +470,16 @@ impl App {
                 }
             }
             Act::Sideways => {
-                st.profile.horizontal = match st.profile.horizontal {
-                    HorizontalStyle::Pointing => HorizontalStyle::Flick,
-                    HorizontalStyle::Flick => HorizontalStyle::Pointing,
-                }
+                let order = [
+                    HorizontalStyle::Swing,
+                    HorizontalStyle::Pointing,
+                    HorizontalStyle::Flick,
+                ];
+                let i = order
+                    .iter()
+                    .position(|h| *h == st.profile.horizontal)
+                    .unwrap_or(0) as i32;
+                st.profile.horizontal = order[(i + d).rem_euclid(3) as usize];
             }
             Act::DropGesture => st.profile.gesture_drop = !st.profile.gesture_drop,
             Act::SensSide => st.profile.sens_horizontal = step(st.profile.sens_horizontal, d),
@@ -596,6 +610,35 @@ impl App {
     }
 
     fn draw_settings_help(&mut self, g: &mut Gfx) {
+        // A live illustration of the gesture behind the focused option.
+        let focused = self.items().get(self.list.focus).map(|x| x.1);
+        let p = self.store.settings.profile;
+        let il = match focused {
+            Some(Act::Rotation | Act::SensRot) => Some(match p.rotation {
+                RotationStyle::Twist => crate::illus::Illus::Twist,
+                RotationStyle::Circle => crate::illus::Illus::Circle,
+            }),
+            Some(Act::Sideways | Act::SensSide) => Some(match p.horizontal {
+                HorizontalStyle::Swing => crate::illus::Illus::Swing,
+                HorizontalStyle::Pointing => crate::illus::Illus::Point,
+                HorizontalStyle::Flick => crate::illus::Illus::Flick,
+            }),
+            Some(Act::DropGesture | Act::SensDrop) => Some(crate::illus::Illus::Drop),
+            _ => None,
+        };
+        if let Some(il) = il {
+            let r = Rect::new(1400, 250, 420, 420);
+            g.round(r, 28, theme::PANEL);
+            crate::illus::draw(
+                g,
+                il,
+                r.center().x(),
+                r.center().y() + 10,
+                1.15,
+                crate::platform::now_us(),
+            );
+            return;
+        }
         let x = 1420;
         let st = &self.store.settings;
         let mut lines: Vec<String> = vec![
@@ -625,6 +668,9 @@ impl App {
     }
 
     fn draw_menu(&mut self, g: &mut Gfx, now: u64) {
+        if !self.store.settings.reduced_motion {
+            draw_ambient(g, now);
+        }
         draw_brand(g, now, 1.0);
         let items: Vec<(Item, Act)> = self.items();
         let plain: Vec<Item> = items.iter().map(|(i, _)| i.clone()).collect();
@@ -762,10 +808,10 @@ impl App {
                             y += 36;
                         }
                         let phases = format!(
-                            "twist {}  circle {}  flick {}  drop {}",
+                            "twist {}  circle {}  swing {}  drop {}",
                             self.engine.twist.phase.label(),
                             self.engine.circle.phase.label(),
-                            self.engine.flick.phase.label(),
+                            self.engine.swing.phase.label(),
                             self.engine.drop.phase.label()
                         );
                         g.text(
@@ -780,10 +826,21 @@ impl App {
                 }
             }
             Screen::Pause | Screen::MotionLost | Screen::Over => {
-                // Dim the board; the menu sits on top of it.
+                // Dim the board; the menu sits on top of it. Results wait for the board to
+                // grey out first.
+                let since = now.saturating_sub(self.screen_since) as f32 / 1000.0;
+                let delay = if self.screen == Screen::Over && !self.store.settings.reduced_motion {
+                    800.0
+                } else {
+                    0.0
+                };
+                let a = ((since - delay) / 220.0).clamp(0.0, 1.0);
+                if a <= 0.0 {
+                    return;
+                }
                 g.fill(
                     Rect::new(0, 0, W as u32, H as u32),
-                    sdl2::pixels::Color::RGBA(0, 0, 0, 222),
+                    sdl2::pixels::Color::RGBA(0, 0, 0, (222.0 * a) as u8),
                 );
                 let (title, body) = match self.screen {
                     Screen::Pause => (
@@ -902,5 +959,52 @@ impl ActionKind for Item {
     fn kind_action(mut self) -> Self {
         self.kind = crate::ui::Kind::Action;
         self
+    }
+}
+
+/// A few dim blocks drifting down behind the main menu: alive, quiet, and never static
+/// (so nothing bright sits in one place on an OLED panel).
+fn draw_ambient(g: &mut Gfx, now: u64) {
+    let t = now as f32 / 1e6;
+    let kinds = [
+        luma_core::Kind::I,
+        luma_core::Kind::T,
+        luma_core::Kind::Z,
+        luma_core::Kind::O,
+        luma_core::Kind::J,
+        luma_core::Kind::S,
+        luma_core::Kind::L,
+    ];
+    for i in 0..14u32 {
+        let h = (i.wrapping_mul(2_654_435_761)) as f32 / u32::MAX as f32;
+        let h2 = (i.wrapping_mul(40_503).wrapping_add(17)) % 1000;
+        let x = 1000.0 + h * 760.0;
+        let speed = 18.0 + (h2 as f32 / 1000.0) * 26.0;
+        let span = H as f32 + 240.0;
+        let y = (t * speed + h2 as f32 * 3.1) % span - 120.0;
+        let size = (24.0 + h * 22.0) as i32;
+        let c = crate::view::colour(kinds[(i % 7) as usize]);
+        // Fade in at the top, out at the bottom.
+        let edge = ((y + 120.0) / 220.0)
+            .min((span - 120.0 - y) / 220.0)
+            .clamp(0.0, 1.0);
+        let a = (0.10 + 0.08 * h) * edge;
+        let r = Rect::new(x as i32, y as i32, size as u32, size as u32);
+        let s = size * 3;
+        let canvas = &mut g.canvas;
+        Gfx::tinted(
+            &mut g.tex.glow,
+            canvas,
+            Rect::new(r.center().x() - s / 2, r.center().y() - s / 2, s as u32, s as u32),
+            alpha(c, a * 0.5),
+            true,
+        );
+        Gfx::tinted(
+            &mut g.tex.block,
+            canvas,
+            r,
+            alpha(crate::gfx::scale(c, 0.8), a * 1.6),
+            false,
+        );
     }
 }

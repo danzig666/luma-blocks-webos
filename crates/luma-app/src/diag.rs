@@ -232,6 +232,19 @@ impl App {
             f.twist_deg.map(wrap_deg).unwrap_or(0.0)
         ));
         lines.push(format!("aim speed {:.2} SH/s  ({:?})", f.vel.len(), f.source));
+        let (gs, gchk) = self.engine.gyro_units();
+        lines.push(format!(
+            "gyro units: {}  ·  stroke travel {:.2} SH  return left {:.2} SH",
+            if !gchk {
+                "rad/s (documented, not yet confirmed)".to_owned()
+            } else if gs > 2.0 {
+                "rad/s (confirmed)".to_owned()
+            } else {
+                "deg/s (detected)".to_owned()
+            },
+            self.engine.swing.travel,
+            self.engine.swing.ret_budget.max(0.0)
+        ));
         for l in lines {
             g.text(&l, x2, y, small, Face::Regular, theme::TEXT_DIM);
             y += lh;
@@ -259,7 +272,7 @@ impl App {
         let ph = [
             ("twist", self.engine.twist.phase.label()),
             ("circle", self.engine.circle.phase.label()),
-            ("flick", self.engine.flick.phase.label()),
+            ("swing", self.engine.swing.phase.label()),
             ("drop", self.engine.drop.phase.label()),
         ];
         for (n, p) in ph {

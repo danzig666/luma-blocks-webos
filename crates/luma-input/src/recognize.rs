@@ -376,7 +376,7 @@ impl Circle {
             let start = self.pts[commit_from].0;
             self.pts.clear();
             self.phase = Phase::Latched;
-            self.latched_until = f.t_us + 250_000;
+            self.latched_until = f.t_us + 500_000;
             return Some(Commit {
                 gesture: if s.turn_deg > 0.0 {
                     Gesture::RotateCw
@@ -401,108 +401,242 @@ impl Circle {
 }
 
 // ------------------------------------------------------------------------------------
-// Horizontal flick
+// Sideways strokes (Swing and Flick styles)
 // ------------------------------------------------------------------------------------
 
-/// One column per deliberate left/right flick: a short, horizontally dominant burst.
-/// The opposite-direction recoil inside `flick_recoil_ms` is ignored, and a burst must
-/// calm below `flick_rearm_speed` before the next flick counts. A large flick is still one
-/// burst, so it moves one column.
-#[derive(Debug, Clone, Default)]
-pub struct Flick {
-    pub phase: Phase,
-    dir: f32,
-    start_us: u64,
-    start_x: f32,
-    peak: f32,
-    h0: f32,
-    max_turn: f32,
-    refractory_dir: f32,
-    refractory_until: u64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrokeMode {
+    /// Swing: the stroke moves as many columns as it is long, live while it happens.
+    #[default]
+    Columns,
+    /// Flick: each stroke moves exactly one column, when it ends.
+    Single,
 }
 
-impl Flick {
+/// Sideways movement by quick strokes, with the natural return pull ignored.
+///
+/// People move a remote sideways and then bring it back. Absolute pointing turns that return
+/// into a move back; this recognizer treats it like lifting a mouse off its pad:
+/// * A stroke starts only above `swing_start_speed` with horizontal dominance and without a
+///   wrist twist in progress, so slow drifting never moves a piece.
+/// * In `Columns` mode the piece moves one column per `swing_col_sh` of travel while the
+///   stroke is happening (the first column a little earlier), at most `swing_max_cols`.
+/// * When the stroke ends, opposite motion within `swing_return_window_ms`, up to
+///   `swing_return_ratio` times the stroke's travel, is the return and moves nothing. The
+///   window closes early when the remote rests or the player continues in the stroke's
+///   direction (repeated strokes chain naturally).
+/// * With circles enabled, a stroke must stay near-horizontal for `swing_confirm_ms` before
+///   it moves anything, so the sides of a circle never drag the piece.
+#[derive(Debug, Clone, Default)]
+pub struct Swing {
+    pub phase: Phase,
+    pub mode: StrokeMode,
+    dir: f32,
+    start_us: u64,
+    origin_x: f32,
+    pub travel: f32,
+    moved: i32,
+    slow_since: Option<u64>,
+    confirmed: bool,
+    max_dev: f32,
+    peak: f32,
+    ret_dir: f32,
+    pub ret_budget: f32,
+    ret_until: u64,
+    ret_still_since: Option<u64>,
+    /// Where the aim last rested: a stroke's travel is measured from here, so the slow
+    /// beginning of a movement still counts.
+    anchor_x: Option<f32>,
+}
+
+impl Swing {
     pub fn reset(&mut self) {
-        *self = Flick::default();
+        let mode = self.mode;
+        *self = Swing::default();
+        self.mode = mode;
     }
-    pub fn cancel(&mut self) {
+
+    /// Stop an in-flight stroke (another gesture owns the trajectory). Columns already moved
+    /// stay; the motion that follows is treated as a return.
+    pub fn cancel(&mut self, t_us: u64, c: &Thresholds) {
         if self.phase == Phase::Candidate {
+            self.end_stroke(t_us, c);
             self.phase = Phase::Disarmed;
         }
     }
 
-    /// `strict`: circles are enabled, so wait for the burst to end and reject curved bursts.
-    pub fn update(&mut self, f: &Frame, c: &Thresholds, strict: bool) -> Option<Commit> {
+    pub fn is_stroke(&self) -> bool {
+        self.phase == Phase::Candidate
+    }
+
+    fn return_active(&self, t_us: u64) -> bool {
+        self.ret_budget > 0.0 && t_us < self.ret_until
+    }
+
+    fn end_stroke(&mut self, t_us: u64, c: &Thresholds) {
+        self.ret_dir = -self.dir;
+        self.ret_budget = self.travel.max(0.0) * c.swing_return_ratio + 0.015;
+        self.ret_until = t_us + (c.swing_return_window_ms * 1000.0) as u64;
+        self.ret_still_since = None;
+        self.phase = Phase::Latched;
+    }
+
+    fn commit(&self, t_us: u64) -> Commit {
+        Commit {
+            gesture: if self.dir > 0.0 {
+                Gesture::MoveRight
+            } else {
+                Gesture::MoveLeft
+            },
+            start_us: self.start_us,
+            t_us,
+            recognizer: match self.mode {
+                StrokeMode::Columns => "swing",
+                StrokeMode::Single => "flick",
+            },
+        }
+    }
+
+    /// `strict`: circles are enabled. `blocked`: another gesture owns the motion.
+    pub fn update(&mut self, f: &Frame, c: &Thresholds, strict: bool, blocked: bool) -> Vec<Commit> {
+        let mut out = Vec::new();
         if f.gap {
-            self.phase = Phase::Idle;
+            self.reset();
+            return out;
         }
         let vx = f.vel.x;
         let vy = f.vel.y;
         let speed = f.vel.len();
+        let yaw_dps = vx.abs() * c.deg_per_sh;
+        let twisting = f
+            .twist_rate_dps
+            .is_some_and(|r| r.abs() > 60.0_f32.max(1.2 * yaw_dps));
+
+        if self.phase != Phase::Candidate && (speed < c.swing_stop_speed || self.anchor_x.is_none()) {
+            self.anchor_x = Some(f.aim.x);
+        }
+        // Return window bookkeeping.
+        if self.return_active(f.t_us) {
+            if speed < c.swing_stop_speed {
+                let s0 = *self.ret_still_since.get_or_insert(f.t_us);
+                if (f.t_us - s0) as f32 / 1000.0 >= c.swing_return_still_ms {
+                    self.ret_budget = 0.0;
+                }
+            } else {
+                self.ret_still_since = None;
+            }
+            if vx * self.ret_dir > 0.0 {
+                self.ret_budget -= (vx * f.dt_s).abs();
+            }
+        }
+        if self.phase == Phase::Latched && !self.return_active(f.t_us) {
+            self.phase = Phase::Idle;
+        }
+
         match self.phase {
-            Phase::Idle => {
-                if vx.abs() > c.flick_enter_speed && vx.abs() > c.flick_dominance * vy.abs() {
-                    let dir = sign(vx);
-                    if dir == -self.refractory_dir && f.t_us < self.refractory_until {
-                        self.phase = Phase::Disarmed; // recoil
-                        return None;
-                    }
+            Phase::Idle | Phase::Latched => {
+                let starts = vx.abs() > c.swing_start_speed && vx.abs() > c.swing_dominance * vy.abs();
+                let dir = sign(vx);
+                let is_return = self.return_active(f.t_us) && dir == self.ret_dir;
+                if starts && !is_return && !blocked && !twisting {
                     self.phase = Phase::Candidate;
                     self.dir = dir;
                     self.start_us = f.t_us;
-                    self.start_x = f.aim.x - vx * f.dt_s;
+                    let back = f.aim.x - vx * f.dt_s;
+                    // Use the rest point only if it lies behind the stroke.
+                    self.origin_x = match self.anchor_x {
+                        Some(a) if (back - a) * dir >= 0.0 && (back - a).abs() < 0.3 => a,
+                        _ => back,
+                    };
+                    self.travel = 0.0;
+                    self.moved = 0;
+                    self.slow_since = None;
+                    self.confirmed = !strict;
+                    self.max_dev = 0.0;
                     self.peak = vx.abs();
-                    self.h0 = vy.atan2(vx).to_degrees();
-                    self.max_turn = 0.0;
+                    self.ret_budget = 0.0;
                 }
             }
             Phase::Candidate => {
-                self.peak = self.peak.max(vx * self.dir);
-                if speed > c.flick_rearm_speed {
-                    let h = vy.atan2(vx).to_degrees();
-                    self.max_turn = self.max_turn.max(wrap_deg(h - self.h0).abs());
-                }
-                let travel = (f.aim.x - self.start_x) * self.dir;
-                let dur = (f.t_us - self.start_us) as f32 / 1000.0;
-                let along = vx * self.dir;
-                if dur > c.flick_max_ms {
-                    self.phase = Phase::Disarmed;
-                    return None;
-                }
-                let ended = if strict {
-                    along < c.flick_rearm_speed.max(0.3 * self.peak)
-                } else {
-                    along < 0.6 * self.peak
-                };
-                if ended {
-                    if travel < c.flick_min_travel_sh
-                        || (strict && self.max_turn > c.flick_max_heading_change_deg)
-                    {
-                        self.phase = Phase::Disarmed;
-                        return None;
+                self.travel = self.travel.max((f.aim.x - self.origin_x) * self.dir);
+                if speed > c.swing_stop_speed {
+                    let dev = vy.abs().atan2((vx * self.dir).max(0.0)).to_degrees();
+                    if f.t_us - self.start_us <= (c.swing_confirm_ms * 1000.0) as u64 {
+                        self.max_dev = self.max_dev.max(dev);
                     }
-                    self.phase = Phase::Latched;
-                    self.refractory_dir = self.dir;
-                    self.refractory_until = f.t_us + (c.flick_recoil_ms * 1000.0) as u64;
-                    return Some(Commit {
-                        gesture: if self.dir > 0.0 {
-                            Gesture::MoveRight
-                        } else {
-                            Gesture::MoveLeft
-                        },
-                        start_us: self.start_us,
-                        t_us: f.t_us,
-                        recognizer: "flick",
-                    });
+                }
+                if strict && !self.confirmed {
+                    if self.max_dev > c.swing_max_heading_dev_deg {
+                        self.phase = Phase::Disarmed;
+                        return out;
+                    }
+                    if (f.t_us - self.start_us) as f32 / 1000.0 >= c.swing_confirm_ms {
+                        self.confirmed = true;
+                    }
+                }
+                if blocked || (twisting && self.moved == 0) {
+                    self.cancel(f.t_us, c);
+                    return out;
+                }
+                if self.confirmed && self.mode == StrokeMode::Columns {
+                    let col = c.swing_col_sh.max(0.005);
+                    let first = col * c.swing_first_col;
+                    let target = if self.travel < first {
+                        0
+                    } else {
+                        (1 + ((self.travel - first) / col) as i32).min(c.swing_max_cols as i32)
+                    };
+                    while self.moved < target {
+                        self.moved += 1;
+                        out.push(self.commit(f.t_us));
+                    }
+                }
+                let along = vx * self.dir;
+                self.peak = self.peak.max(along);
+                // Flick: one column as soon as the stroke is clearly past its peak, before any
+                // recoil begins.
+                if self.mode == StrokeMode::Single
+                    && self.moved == 0
+                    && self.confirmed
+                    && self.travel >= c.flick_min_travel_sh
+                    && along < 0.6 * self.peak
+                {
+                    self.moved = 1;
+                    out.push(self.commit(f.t_us));
+                }
+                let reversed = along < -c.swing_stop_speed;
+                if along < c.swing_stop_speed {
+                    self.slow_since.get_or_insert(f.t_us);
+                } else {
+                    self.slow_since = None;
+                }
+                let ended = reversed
+                    || self
+                        .slow_since
+                        .is_some_and(|s0| (f.t_us - s0) as f32 / 1000.0 >= c.swing_end_ms);
+                if ended {
+                    if self.mode == StrokeMode::Single
+                        && self.moved == 0
+                        && self.confirmed
+                        && self.travel >= c.flick_min_travel_sh
+                    {
+                        self.moved = 1;
+                        out.push(self.commit(f.t_us));
+                    }
+                    self.end_stroke(f.t_us, c);
                 }
             }
-            Phase::Latched | Phase::Disarmed => {
-                if speed < c.flick_rearm_speed {
-                    self.phase = Phase::Idle;
+            Phase::Disarmed => {
+                if speed < c.rearm_speed {
+                    self.phase = if self.return_active(f.t_us) {
+                        Phase::Latched
+                    } else {
+                        Phase::Idle
+                    };
                 }
             }
         }
-        None
+        out
     }
 }
 
@@ -602,7 +736,7 @@ impl Drop {
                 }
             }
             Phase::Disarmed => {
-                if speed < c.flick_rearm_speed {
+                if speed < c.rearm_speed {
                     self.phase = Phase::Idle;
                 }
             }

@@ -1,34 +1,51 @@
-# Luma Blocks 0.1.0 (test build)
+# Luma Blocks 0.2.0 (test build)
 
 A minimalist falling-block puzzle for LG webOS TVs with Magic Remote motion controls.
 
-**This is a pre-release.** The app has been built, ABI-audited and smoke-tested under ARM
-emulation, and its game and gesture logic is covered by automated tests. It has **not yet been
-run on a TV**. Motion sensing on real remotes, button codes and performance still need checking
-([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.1.0/docs/TV_CHECKLIST.md)).
+**Pre-release.** Built, ABI-audited and smoke-tested under ARM emulation; game and gesture logic
+covered by automated tests. On-TV feedback from 0.1.0 drove this release; motion behaviour on
+real remotes still needs confirming
+([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.0/docs/TV_CHECKLIST.md)).
+
+## What changed since 0.1.0
+
+* **Sideways movement redesigned: Swing (new default).**
+  * A quick sideways swing moves the piece as far as you swing, and **pulling the remote back is
+    ignored**. Before, absolute pointing moved the piece back with the remote.
+  * Slow movements never move a piece.
+  * Pointing and one-column Flicking remain as options; Flicking now also ignores the pull back.
+  * Existing installs switch to Swing automatically.
+* **Motion from the gyroscope.** Gestures now use the remote's gyroscope directly; its units are
+  checked against the orientation automatically.
+* **New motion setup**:
+  * Hold still → twist right → swing right → (board edges for Pointing) → try it.
+  * Every step has an animated example and a live gauge, and moves on by itself.
+  * The last step is a live board where a reversed rotation, sideways or drop direction is fixed
+    with one colour button.
+  * A clearly visible aim dot replaces the invisible pointer in the edge steps.
+* **App-drawn cursor** when the TV's own pointer is hidden or silent.
+* **Much more animation**:
+  * Pieces glide between cells and visibly turn when rotated.
+  * Cleared rows flash and dissolve from the centre while the stack falls into place.
+  * Landing dust, a scrolling next queue, a hold pop, a counting score and a level-up pulse.
+  * Game over greys the board from the top.
+  * Menus fade in, the focus glides and items slide in; dim blocks drift behind the main menu;
+    Settings shows the selected gesture animated.
+  * Reduced motion turns most of this off.
+* **Fixes**: an OK press at game over no longer starts a new game instantly. The tail of a
+  circle no longer nudges the piece sideways. Flicks commit before their recoil.
 
 ## Downloads
 
-* `io.github.danzig666.lumablocks_0.1.0_arm.ipk`: **Luma Blocks**
-* `io.github.danzig666.lumablocks.debug_0.1.0_arm.ipk`: **Luma Blocks (Dev)**, a separate
-  identity with separate saves, for testing
+* `io.github.danzig666.lumablocks_0.2.0_arm.ipk`: **Luma Blocks**
+* `io.github.danzig666.lumablocks.debug_0.2.0_arm.ipk`: **Luma Blocks (Dev)**, a separate
+  identity with separate saves
 * `SHA256SUMS.txt`, plus the Homebrew Channel manifest
 
 Install: Developer Mode (`ares-install`) or Homebrew Channel / Dev Manager. See
-[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.1.0/docs/INSTALL.md).
+[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.0/docs/INSTALL.md).
 
-## What's in it
-
-* **Modes**: Marathon, Sprint (40 lines), Zen, Gesture practice. The game is always resumable:
-  leave mid-game and choose **Continue** or **New game** next time.
-* **Motion controls**:
-  * Wrist twist or circle to rotate; pointing or flicking to move; a downward flick to drop.
-  * All four style combinations, per-gesture sensitivity, guided calibration and a recenter
-    button.
-* **Full button controls**: D-pad, OK hard drop, Back pause, colour shortcuts (remappable), and a
-  pause menu that offers every action.
-* **Look**: true black, softly glowing pieces, short drop trails and quick line-clear sweeps.
-  Idle screens dim to protect the OLED.
-* **For testers**: Settings → More → Developer options adds **Input diagnostics** (button codes,
-  sensor stream, rate, recognized gestures) and trace recording. Please send traces and
-  screenshots.
+**For testers:** please run Settings → Calibrate the remote first. If gestures still feel wrong,
+turn on Settings → More → Developer options, open **Input diagnostics**, record a trace with Red
+while doing the gesture a few times, and send the trace file (`scripts/tv.sh traces`) and a photo
+of the screen.

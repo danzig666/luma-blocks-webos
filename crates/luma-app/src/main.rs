@@ -4,7 +4,7 @@
 //! Command line:
 //!   luma-blocks                      run (TV: real sensor; desktop: simulated sensor)
 //!   luma-blocks --self-test          non-graphical checks (CI under qemu-arm, or over SSH)
-//!   luma-blocks --analyze-trace F [--profile twist-point|twist-flick|circle-point|circle-flick]
+//!   luma-blocks --analyze-trace F [--profile twist-swing|twist-point|twist-flick|circle-swing|...]
 //!                                    replay a recorded trace through the gesture engine
 //!   luma-blocks --replay F           run the app with motion played back from a trace
 //!   luma-blocks --shots DIR          render documentation screenshots (desktop)
@@ -14,6 +14,7 @@ mod app;
 mod audio;
 mod diag;
 mod gfx;
+mod illus;
 mod keys;
 mod luna;
 mod motion;
@@ -255,7 +256,45 @@ fn screenshots(app: &mut app::App, g: &mut gfx::Gfx, dir: &str) -> Result<(), St
     press(app, Button::Ok);
     shot(app, g, "onboarding-style", 40)?;
     app.start_calibration(app::Screen::Menu);
-    shot(app, g, "calibration", 20)?;
+    shot(app, g, "calibration-hold", 40)?;
+    shot(app, g, "calibration-step", 40)?;
+    let play = |app: &mut app::App, sc: motion::Script| {
+        if let Some(sim) = app.motion.sim() {
+            sim.play(sc);
+        }
+    };
+    play(app, motion::Script::TwistCw);
+    shot(app, g, "calibration-twist", 14)?;
+    shot(app, g, "calibration-twist-done", 70)?;
+    play(app, motion::Script::SwingRight);
+    shot(app, g, "calibration-swing", 9)?;
+    shot(app, g, "calibration-swing-done", 70)?;
+    play(app, motion::Script::SwingRight);
+    shot(app, g, "calibration-try-1", 70)?;
+    play(app, motion::Script::TwistCw);
+    shot(app, g, "calibration-try", 22)?;
+    // A line clear caught mid-animation.
+    app.new_game(Mode::Marathon);
+    if let Some(s) = app.session.as_mut() {
+        s.ready_until = None;
+        for y in 36..40 {
+            for x in 1..10 {
+                s.game.board[(y * 10 + x) as usize] = 1 + ((x + y) % 7) as u8;
+            }
+        }
+        s.game.board[(35 * 10 + 4) as usize] = 3;
+        s.game.active = luma_core::Piece {
+            kind: luma_core::Kind::I,
+            rot: 1,
+            x: -2,
+            y: 22,
+        };
+    }
+    shot(app, g, "line-clear-before", 2)?;
+    if let Some(s) = app.session.as_mut() {
+        s.game.apply(Action::HardDrop);
+    }
+    shot(app, g, "line-clear", 5)?;
     app.new_game(Mode::Practice);
     if let Some(s) = app.session.as_mut() {
         s.ready_until = None;
@@ -282,10 +321,10 @@ fn analyze_trace(path: &str) -> i32 {
             } else {
                 RotationStyle::Twist
             },
-            horizontal: if h == "flick" {
-                HorizontalStyle::Flick
-            } else {
-                HorizontalStyle::Pointing
+            horizontal: match h {
+                "flick" => HorizontalStyle::Flick,
+                "point" => HorizontalStyle::Pointing,
+                _ => HorizontalStyle::Swing,
             },
             ..Profile::default()
         }
@@ -515,6 +554,45 @@ fn flow_test() -> i32 {
     check("focus gain stays paused", b.screen == Screen::Pause);
     b.exit();
     check("exit requested", b.quit);
+    // Guided motion setup end to end with the simulated remote.
+    b.quit = false;
+    b.quit_to_menu();
+    b.start_calibration(Screen::Menu);
+    let step = |a: &app::App| a.cal.as_ref().map(|c| c.step);
+    wait(&mut b, 1600);
+    check(
+        "setup: holding still completes step 1",
+        step(&b) == Some(setup::CalStep::Twist),
+    );
+    if let Some(sim) = b.motion.sim() {
+        sim.play(motion::Script::TwistCw);
+    }
+    wait(&mut b, 1300);
+    check(
+        "setup: a clockwise twist completes step 2",
+        step(&b) == Some(setup::CalStep::Swing),
+    );
+    check(
+        "setup: measured axis matches the remote",
+        b.engine.calib.long_axis == luma_input::math::Vec3::Y && b.engine.calib.twist_sign == 1.0,
+    );
+    wait(&mut b, 400);
+    if let Some(sim) = b.motion.sim() {
+        sim.play(motion::Script::SwingRight);
+    }
+    wait(&mut b, 1300);
+    check(
+        "setup: a swing completes step 3",
+        step(&b) == Some(setup::CalStep::Try),
+    );
+    press(&mut b, Button::Ok);
+    check(
+        "setup: OK finishes and returns",
+        b.screen == Screen::Menu && b.cal.is_none(),
+    );
+    check("setup: calibration saved", b.store.calibration.axes_measured);
+    b.continue_saved();
+    b.resume();
     // Motion loss: Twist profile, sensor stream dies during play.
     b.quit = false;
     b.resume();

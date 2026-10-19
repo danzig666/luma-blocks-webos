@@ -15,8 +15,10 @@ sensor or with ordinary remote buttons.** Native Rust, SDL2 and OpenGL ES 2, tru
 |---|---|
 | ![Game](docs/screenshots/game.png) | ![Menu](docs/screenshots/menu.png) |
 | Marathon on true black: soft halos, dim outlined landing preview | Main menu |
-| ![Gesture style](docs/screenshots/onboarding-style.png) | ![Diagnostics](docs/screenshots/diagnostics.png) |
-| First-run choice of gesture styles, with animated illustrations | Input diagnostics: buttons, sensor stream, recognizers |
+| ![Gesture style](docs/screenshots/onboarding-style.png) | ![Line clear](docs/screenshots/line-clear.png) |
+| First-run choice of gesture styles, with animated illustrations | A four-line clear: flash, centre-out dissolve, stack falls into place |
+| ![Setup: twist](docs/screenshots/calibration-twist.png) | ![Setup: try it](docs/screenshots/calibration-try.png) |
+| Motion setup: animated instruction with a live gauge | The try-it board at the end of setup |
 
 Desktop simulator captures; the TV runs the same renderer.
 
@@ -24,11 +26,14 @@ Desktop simulator captures; the TV runs the same renderer.
 
 * **Motion controls**:
   * Rotate with a **wrist twist** or by **drawing a circle**.
-  * Move sideways by **pointing** at a column or by **flicking**.
+  * Move sideways by **swinging** (default): a quick sideways swing moves the piece as far as
+    you swing, and the natural pull back is ignored. Alternatives are **pointing** at a column
+    or **flicking** one column at a time.
   * **Hard drop** with a quick downward flick.
-  * Rotation and sideways styles are independent, so all four combinations work.
+  * Rotation and sideways styles are independent, so all six combinations work.
   * Sensitivity is adjustable separately for sideways movement, rotation and drop, and gesture drop can be turned off.
-  * Guided calibration measures the remote's axes and your neutral pose.
+  * A guided, animated setup measures the remote's axes from the gyroscope and ends on a live
+    try-it board where any reversed direction can be flipped with a colour button.
 * **Complete button play**:
   * Left/Right move (adjustable auto-repeat), Down soft drop, Up rotate, OK hard drop, Back pause.
   * Colour buttons are remappable shortcuts: Red rotate anticlockwise, Green hold, Blue recenter.

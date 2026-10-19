@@ -82,6 +82,11 @@ pub struct List {
     scroll: usize,
     rects: Vec<(usize, Rect)>,
     last_ptr: Option<(i32, i32)>,
+    /// Animated focus highlight position (y) and the time of the last draw.
+    anim_y: Option<f32>,
+    last_draw_us: u64,
+    /// Items fade and slide in, one after another, when the list first appears.
+    shown_us: u64,
 }
 
 impl List {
@@ -208,19 +213,56 @@ impl List {
             self.scroll = self.focus + 1 - max_rows;
         }
         self.rects.clear();
+        let now = crate::platform::now_us();
+        if self.shown_us == 0 {
+            self.shown_us = now;
+        }
+        let dt = if self.last_draw_us == 0 {
+            1000.0
+        } else {
+            now.saturating_sub(self.last_draw_us) as f32 / 1000.0
+        };
+        self.last_draw_us = now;
+        // Glide the focus highlight toward the focused row.
+        let focus_y = y + (self.focus.saturating_sub(self.scroll) as i32) * row;
+        let ay = match self.anim_y {
+            Some(a) if (a - focus_y as f32).abs() < 600.0 => {
+                a + (focus_y as f32 - a) * (1.0 - (-dt / 45.0).exp())
+            }
+            _ => focus_y as f32,
+        };
+        self.anim_y = Some(ay);
+        if items.get(self.focus).is_some_and(|it| it.kind != Kind::Heading) {
+            let r = Rect::new(x, ay.round() as i32, w as u32, (row - 12) as u32);
+            g.round(r, 26, theme::PANEL_HI);
+            g.round_outline(r, 26, alpha(theme::CYAN, 0.9), 3);
+        }
         let mut cy = y;
-        for (i, it) in items.iter().enumerate().skip(self.scroll).take(max_rows) {
+        for (n, (i, it)) in items
+            .iter()
+            .enumerate()
+            .skip(self.scroll)
+            .take(max_rows)
+            .enumerate()
+        {
             let r = Rect::new(x, cy, w as u32, (row - 12) as u32);
+            let appear = ((now.saturating_sub(self.shown_us) as f32 / 1000.0 - n as f32 * 35.0) / 220.0)
+                .clamp(0.0, 1.0);
+            let appear = 1.0 - (1.0 - appear).powi(3);
+            let dx = ((1.0 - appear) * 30.0) as i32;
             if it.kind == Kind::Heading {
-                g.text(&it.label, x + 24, cy + 22, 22.0, Face::Semi, theme::TEXT_FAINT);
+                g.text(
+                    &it.label,
+                    x + 24 + dx,
+                    cy + 22,
+                    22.0,
+                    Face::Semi,
+                    alpha(theme::TEXT_FAINT, appear),
+                );
                 cy += row;
                 continue;
             }
             let focused = i == self.focus;
-            if focused {
-                g.round(r, 26, theme::PANEL_HI);
-                g.round_outline(r, 26, alpha(theme::CYAN, 0.9), 3);
-            }
             let tc = if !it.enabled {
                 theme::TEXT_FAINT
             } else if focused {
@@ -228,7 +270,8 @@ impl List {
             } else {
                 theme::TEXT_DIM
             };
-            g.text(&it.label, x + 32, cy + 11, 30.0, Face::Regular, tc);
+            let tc = alpha(tc, appear);
+            g.text(&it.label, x + 32 + dx, cy + 11, 30.0, Face::Regular, tc);
             if let Some(v) = &it.value {
                 let vc = if focused { theme::CYAN } else { theme::TEXT_DIM };
                 let s = if focused && it.kind == Kind::Choice {
