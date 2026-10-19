@@ -217,6 +217,11 @@ impl GestureEngine {
         (self.sensor.orient_yaw_sign, self.sensor.orient_pitch_sign)
     }
 
+    /// The remote's roll about its length relative to the room (from gravity), degrees.
+    pub fn roll_deg(&self) -> Option<f32> {
+        self.sensor.roll_rad.map(f32::to_degrees)
+    }
+
     pub fn motion(&mut self, s: &MotionSample) {
         if let Some(p) = self.probe.as_mut() {
             let dt = self

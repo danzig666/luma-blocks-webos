@@ -33,7 +33,9 @@ pure crates and runs on any desktop.
   asleep, duplicate subscription, too many clients, bad interval, malformed.
 * **Frames**: motion comes from the **gyroscope** whenever it is delivered (a direct
   body-frame rate with documented axes); its units are cross-checked against the orientation at
-  runtime (rad/s per LG, deg/s detected automatically). The orientation's yaw and pitch are
+  runtime (rad/s per LG, deg/s detected automatically). The yaw and pitch rates are turned by
+  the remote's roll about its length, measured from gravity (accelerometer, smoothed, only
+  while it reads about 1 g), so a remote held rolled still moves in room directions. The orientation's yaw and pitch are
   compared with the gyro's while the remote moves; if the firmware reports the rotation vector
   in the opposite convention (which mirrors pointing), the absolute aim is flipped to match. Short-term aim is integrated from the gyro
   with a slow leak. For the Pointing style, absolute aim comes from the orientation relative to

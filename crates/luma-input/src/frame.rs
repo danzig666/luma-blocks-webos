@@ -11,7 +11,7 @@
 
 use crate::calib::{AimSource, Calibration};
 use crate::config::Thresholds;
-use crate::math::{wrap_deg, Quat, Vec2};
+use crate::math::{wrap_deg, Quat, Vec2, Vec3};
 use crate::sample::MotionSample;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -60,6 +60,13 @@ pub struct AimTracker {
     orient_prev: Option<(f32, f32)>,
     yaw_agree: Agreement,
     pitch_agree: Agreement,
+    /// How far the remote is rolled about its length relative to the room, from gravity
+    /// (radians, smoothed); None until gravity has been seen clearly.
+    pub roll_rad: Option<f32>,
+    /// +1 if the accelerometer reads +g along "up" when held normally (LG's example data and
+    /// most sensors), -1 if the firmware reports the opposite sign; learned from the first
+    /// clear readings (players start with the remote held normally).
+    accel_up_sign: Option<f32>,
 }
 
 /// Degrees of gyro-measured motion needed before deciding an orientation sign.
@@ -93,7 +100,7 @@ impl AimTracker {
     pub fn reset(&mut self) {
         // The unit check survives resets: it describes the hardware, not the gesture.
         // So do the orientation signs.
-        let (g, checked) = (self.gyro_to_dps, self.gyro_units_checked);
+        let (g, checked, accel_sign) = (self.gyro_to_dps, self.gyro_units_checked, self.accel_up_sign);
         let (ys, ps, ya, pa) = (
             self.orient_yaw_sign,
             self.orient_pitch_sign,
@@ -103,10 +110,26 @@ impl AimTracker {
         *self = AimTracker::default();
         self.gyro_to_dps = g;
         self.gyro_units_checked = checked;
+        self.accel_up_sign = accel_sign;
         self.orient_yaw_sign = ys;
         self.orient_pitch_sign = ps;
         self.yaw_agree = ya;
         self.pitch_agree = pa;
+    }
+
+    /// Yaw and pitch rates (deg/s) in room directions: the body-frame rates turned by the
+    /// remote's roll, so a remote held rolled still moves left/right and up/down the way the
+    /// player sees it.
+    fn room_rates(&self, g: Vec3, up: Vec3, right: Vec3, calib: &Calibration) -> (f32, f32) {
+        let (raw_yaw, raw_pitch) = (-g.dot(up), g.dot(right));
+        let (raw_yaw, raw_pitch) = match self.roll_rad {
+            Some(r) => {
+                let (sn, cs) = r.sin_cos();
+                (cs * raw_yaw - sn * raw_pitch, sn * raw_yaw + cs * raw_pitch)
+            }
+            None => (raw_yaw, raw_pitch),
+        };
+        (raw_yaw * calib.yaw_sign, raw_pitch * calib.pitch_sign)
     }
 
     /// Learn whether the orientation turns the same way as the gyro, from steps of both.
@@ -201,6 +224,32 @@ impl AimTracker {
         self.check_units(s, dt_raw);
         let dt_int = dt_raw.min(0.1);
         // Absolute aim from the orientation (relative to the calibrated neutral pose).
+        // Roll about the long axis, from gravity: while the remote rests or moves gently the
+        // accelerometer points up in the body frame.
+        if let Some(a) = s.accel {
+            let (ar, au) = (a.dot(right), a.dot(up));
+            if self.accel_up_sign.is_none() && au.abs() > 7.0 && (a.len() - 9.81).abs() < 1.5 {
+                self.accel_up_sign = Some(au.signum());
+                if au < 0.0 {
+                    self.roll_rad = None; // was learned with the wrong sign
+                }
+            }
+            let sg = self.accel_up_sign.unwrap_or(1.0);
+            let (ar, au) = (ar * sg, au * sg);
+            // Until a clear reading says otherwise, assume the documented sign.
+            if (a.len() - 9.81).abs() < 2.5 && (ar * ar + au * au).sqrt() > 4.0 {
+                let phi = ar.atan2(au);
+                let k = if dt_int > 0.0 {
+                    dt_int / (0.12 + dt_int)
+                } else {
+                    1.0
+                };
+                self.roll_rad = Some(match self.roll_rad {
+                    Some(r) => r + wrap_rad(phi - r) * k,
+                    None => phi,
+                });
+            }
+        }
         let raw_orient = s.quat.map(|q| {
             let neutral = calib.neutral.unwrap_or(Quat::IDENTITY);
             let rel = neutral.relative_to(q);
@@ -212,11 +261,8 @@ impl AimTracker {
         });
         if let Some((yaw, pitch, _)) = raw_orient {
             let gyro_step = s.gyro.filter(|_| dt_int > 0.0).map(|g| {
-                let g = g.scale(self.scale());
-                (
-                    -g.dot(up) * calib.yaw_sign * dt_int,
-                    g.dot(right) * calib.pitch_sign * dt_int,
-                )
+                let (y, p) = self.room_rates(g.scale(self.scale()), up, right, calib);
+                (y * dt_int, p * dt_int)
             });
             self.check_orientation(yaw, pitch, gyro_step);
         }
@@ -232,8 +278,7 @@ impl AimTracker {
         let use_gyro = s.gyro.is_some() && (cfg.prefer_gyro || orient.is_none());
         let (aim, twist, twist_rate_g) = if use_gyro {
             let g = s.gyro.unwrap().scale(self.scale());
-            let yaw_rate = -g.dot(up) * calib.yaw_sign;
-            let pitch_rate = g.dot(right) * calib.pitch_sign;
+            let (yaw_rate, pitch_rate) = self.room_rates(g, up, right, calib);
             let twist_rate = g.dot(long) * calib.twist_sign;
             // Short-term integration with a slow leak toward zero (no long-term drift).
             let leak = (-dt_int / 4.0).exp();
@@ -287,4 +332,10 @@ impl AimTracker {
             gap,
         }
     }
+}
+
+/// Wrap an angle to -pi..pi.
+fn wrap_rad(a: f32) -> f32 {
+    let t = std::f32::consts::TAU;
+    a - t * ((a + std::f32::consts::PI) / t).floor()
 }

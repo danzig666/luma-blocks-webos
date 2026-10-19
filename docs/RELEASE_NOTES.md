@@ -1,13 +1,21 @@
-# Luma Blocks 0.2.9 (test build)
+# Luma Blocks 0.2.10 (test build)
 
 A minimalist falling-block puzzle for LG webOS TVs with Magic Remote motion controls.
 
 **Pre-release.** Built, ABI-audited and smoke-tested under ARM emulation; game and gesture logic
 covered by automated tests. On-TV feedback drove this release; motion behaviour on real remotes
 still needs confirming
-([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.9/docs/TV_CHECKLIST.md)).
+([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.10/docs/TV_CHECKLIST.md)).
 
-## What changed since 0.2.8
+## What changed since 0.2.9
+
+* **Directions follow the room, however the remote is held.** Held rolled (turned about its
+  length), a flick down used to look diagonal or even sideways to the game: at 90° it moved
+  the piece instead of dropping it. The motion is now turned by the remote's roll, measured
+  from gravity, so a flick down always drops and a swing always moves left or right. Input
+  diagnostics shows the roll.
+
+## Earlier: 0.2.9 (since 0.2.8)
 
 * **Motion is purely relative.** Gestures could switch to the TV's on-screen pointer whenever
   the motion sensor paused for a moment (button mode, a short gap). The pointer stops at the
@@ -181,13 +189,13 @@ pointer did not show.
 
 ## Downloads
 
-* `io.github.danzig666.lumablocks_0.2.9_arm.ipk`: **Luma Blocks**
-* `io.github.danzig666.lumablocks.debug_0.2.9_arm.ipk`: **Luma Blocks (Dev)**, a separate
+* `io.github.danzig666.lumablocks_0.2.10_arm.ipk`: **Luma Blocks**
+* `io.github.danzig666.lumablocks.debug_0.2.10_arm.ipk`: **Luma Blocks (Dev)**, a separate
   identity with separate saves
 * `SHA256SUMS.txt`, plus the Homebrew Channel manifest
 
 Install: Developer Mode (`ares-install`) or Homebrew Channel / Dev Manager. See
-[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.9/docs/INSTALL.md).
+[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.10/docs/INSTALL.md).
 
 **For testers:** please run Settings → Calibrate the remote first. If gestures still feel wrong,
 turn on Settings → More → Developer options, open **Input diagnostics**, record a trace with Red

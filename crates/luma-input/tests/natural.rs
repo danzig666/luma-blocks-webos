@@ -360,3 +360,59 @@ fn the_pointer_never_takes_over_once_the_sensor_has_reported() {
     let got = feed(&mut e, &gestures::swing(&mut s, 1.0, 6.0, 140.0, 1.0));
     assert_eq!(got.first(), Some(&Gesture::MoveRight), "{got:?}");
 }
+
+/// Holding the remote rolled (twisted about its length) must not change what a flick down or
+/// a sideways swing means: directions follow the room, not the remote's own axes.
+#[test]
+fn a_rolled_remote_still_drops_and_swings_the_right_way() {
+    for roll in [-90.0f32, -60.0, -35.0, 35.0, 60.0, 90.0] {
+        for rot in [RotationStyle::Twist, RotationStyle::Circle] {
+            let p = Profile {
+                rotation: rot,
+                horizontal: HorizontalStyle::Swing,
+                ..Profile::default()
+            };
+            let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+            let mut s = Synth::new(60.0, 94);
+            s.base = (0.0, 0.0, roll);
+            feed(&mut e, &s.hold(2500.0));
+            let got = feed(&mut e, &gestures::drop(&mut s, 18.0, 150.0));
+            assert_eq!(
+                got,
+                vec![Gesture::HardDrop],
+                "roll {roll} {rot:?}: drop gave {got:?}"
+            );
+            let got = feed(&mut e, &gestures::swing(&mut s, 1.0, 6.0, 140.0, 1.0));
+            assert!(
+                !got.is_empty() && got.iter().all(|g| *g == Gesture::MoveRight),
+                "roll {roll} {rot:?}: swing right gave {got:?}"
+            );
+            let got = feed(&mut e, &gestures::swing(&mut s, -1.0, 6.0, 140.0, 1.0));
+            assert!(
+                !got.is_empty() && got.iter().all(|g| *g == Gesture::MoveLeft),
+                "roll {roll} {rot:?}: swing left gave {got:?}"
+            );
+        }
+    }
+}
+
+/// Same with firmware that reports gravity with the opposite sign.
+#[test]
+fn a_rolled_remote_works_with_an_inverted_accelerometer() {
+    let p = Profile::default();
+    let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+    let mut s = Synth::new(60.0, 95);
+    let flip = |v: Vec<luma_input::sample::MotionSample>| -> Vec<luma_input::sample::MotionSample> {
+        v.into_iter()
+            .map(|mut m| {
+                m.accel = m.accel.map(|a| a.scale(-1.0));
+                m
+            })
+            .collect()
+    };
+    feed(&mut e, &flip(s.hold(800.0)));
+    feed(&mut e, &flip(s.motion(400.0, |q| (0.0, 0.0, 70.0 * ease(q)))));
+    feed(&mut e, &flip(s.hold(2500.0)));
+    let got = feed(&mut e, &flip(gestures::drop(&mut s, 18.0, 150.0)));
+    assert_eq!(got, vec![Gesture::HardDrop], "{got:?}");
+}
