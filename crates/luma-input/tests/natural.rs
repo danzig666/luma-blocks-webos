@@ -417,40 +417,23 @@ fn a_rolled_remote_works_with_an_inverted_accelerometer() {
     assert_eq!(got, vec![Gesture::HardDrop], "{got:?}");
 }
 
-/// When the accelerometer gives nothing usable, LG's own pointer (which already follows the
-/// room) teaches how the remote is rolled.
+/// The fit against LG's pointer (shown in diagnostics) agrees with the gravity estimate.
 #[test]
-fn a_rolled_remote_learns_its_roll_from_the_pointer() {
-    for roll in [-75.0f32, -40.0, 40.0, 75.0] {
-        let p = Profile::default();
-        let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+fn the_pointer_fit_agrees_with_gravity() {
+    for roll in [-75.0f32, -40.0, 0.0, 40.0, 75.0] {
+        let mut e = GestureEngine::new(Thresholds::default(), Profile::default(), Calibration::default());
         let mut s = Synth::new(60.0, 96);
         s.cursor_px_per_deg = Some(40.0);
         s.base = (0.0, 0.0, roll);
-        let no_accel = |v: Vec<luma_input::sample::MotionSample>| -> Vec<luma_input::sample::MotionSample> {
-            v.into_iter()
-                .map(|mut m| {
-                    m.accel = None;
-                    m
-                })
-                .collect()
-        };
-        feed(&mut e, &no_accel(s.hold(800.0)));
-        // A little ordinary aiming around (slow, no gestures) lets it learn.
+        feed(&mut e, &s.hold(800.0));
         feed(
             &mut e,
-            &no_accel(s.motion(1500.0, |q| {
+            &s.motion(1500.0, |q| {
                 (4.0 * (q * 7.0).sin(), 3.0 * (q * 5.0).cos() - 3.0, 0.0)
-            })),
+            }),
         );
-        feed(&mut e, &no_accel(s.hold(2500.0)));
-        let got = feed(&mut e, &no_accel(gestures::drop(&mut s, 18.0, 150.0)));
-        assert_eq!(got, vec![Gesture::HardDrop], "roll {roll}: drop gave {got:?}");
-        let got = feed(&mut e, &no_accel(gestures::swing(&mut s, 1.0, 6.0, 140.0, 1.0)));
-        assert!(
-            !got.is_empty() && got.iter().all(|g| *g == Gesture::MoveRight),
-            "roll {roll}: swing right gave {got:?}"
-        );
+        let (g, p) = (e.roll_deg().unwrap(), e.pointer_roll_deg().unwrap());
+        assert!((p + g).abs() < 8.0, "roll {roll}: gravity {g}, pointer {p}");
     }
 }
 

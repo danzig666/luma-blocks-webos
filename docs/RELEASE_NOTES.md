@@ -1,13 +1,24 @@
-# Luma Blocks 0.2.11 (test build)
+# Luma Blocks 0.2.12 (test build)
 
 A minimalist falling-block puzzle for LG webOS TVs with Magic Remote motion controls.
 
 **Pre-release.** Built, ABI-audited and smoke-tested under ARM emulation; game and gesture logic
 covered by automated tests. On-TV feedback drove this release; motion behaviour on real remotes
 still needs confirming
-([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.11/docs/TV_CHECKLIST.md)).
+([TV checklist](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.12/docs/TV_CHECKLIST.md)).
 
-## What changed since 0.2.10
+## What changed since 0.2.11
+
+Feedback: in 0.2.11 the piece no longer moved left or right.
+
+* **Sideways movement works again.** 0.2.11 turned the motion by a roll learned from LG's
+  pointer; on the TV that went wrong. The roll comes from gravity again, as in 0.2.10 (when
+  sideways movement worked). The pointer-based value is only shown in Input diagnostics, to
+  compare with gravity.
+* Kept from 0.2.11: a slow change of grip no longer blocks drops (the likely reason a flick
+  down did not drop with the remote held rolled).
+
+## Earlier: 0.2.11 (since 0.2.10)
 
 Feedback: with the remote held rolled, a flick down still was not a drop, although LG's own
 pointer clearly knew which way was down.
@@ -202,13 +213,13 @@ pointer did not show.
 
 ## Downloads
 
-* `io.github.danzig666.lumablocks_0.2.11_arm.ipk`: **Luma Blocks**
-* `io.github.danzig666.lumablocks.debug_0.2.11_arm.ipk`: **Luma Blocks (Dev)**, a separate
+* `io.github.danzig666.lumablocks_0.2.12_arm.ipk`: **Luma Blocks**
+* `io.github.danzig666.lumablocks.debug_0.2.12_arm.ipk`: **Luma Blocks (Dev)**, a separate
   identity with separate saves
 * `SHA256SUMS.txt`, plus the Homebrew Channel manifest
 
 Install: Developer Mode (`ares-install`) or Homebrew Channel / Dev Manager. See
-[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.11/docs/INSTALL.md).
+[INSTALL](https://github.com/danzig666/luma-blocks-webos/blob/v0.2.12/docs/INSTALL.md).
 
 **For testers:** please run Settings → Calibrate the remote first. If gestures still feel wrong,
 turn on Settings → More → Developer options, open **Input diagnostics**, record a trace with Red

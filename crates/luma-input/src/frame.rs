@@ -68,8 +68,8 @@ pub struct AimTracker {
     /// clear readings (players start with the remote held normally).
     accel_up_sign: Option<f32>,
     /// Rotation (radians, screen plane) that turns our gyro motion into the way LG's own
-    /// pointer moves, learned from the pointer's movement. The firmware's pointer already
-    /// follows the room however the remote is held, so this is the most direct reference.
+    /// pointer moves, learned from the pointer's movement. Diagnostics only (see
+    /// `screen_roll`).
     pub cursor_roll_rad: Option<f32>,
     cursor_prev: Option<(f32, f32)>,
     /// Running sum of pointer step x conj(gyro step) (complex, decaying) and of the step
@@ -148,12 +148,10 @@ impl AimTracker {
         (x, -y)
     }
 
-    /// The rotation in the screen plane that compensates the remote's roll: learned from
-    /// LG's pointer when it has moved recently, else from gravity, else none.
+    /// The rotation in the screen plane that compensates the remote's roll, from gravity.
+    /// (The fit against LG's pointer is shown in diagnostics only: on the TV it made sideways
+    /// movement fail in 0.2.11, so its convention is not trusted until verified there.)
     fn screen_roll(&self, calib: &Calibration) -> f32 {
-        if let Some(t) = self.cursor_roll_rad {
-            return t;
-        }
         match self.roll_rad {
             // Gravity gives the roll in the body frame; in the screen plane it turns the
             // other way, and a calibrated mirror flips it again.

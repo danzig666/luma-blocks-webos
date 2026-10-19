@@ -261,7 +261,7 @@ impl App {
                 .unwrap_or_else(|| "?".into()),
             self.engine
                 .pointer_roll_deg()
-                .map(|r| format!("{r:+.0}° (used)"))
+                .map(|r| format!("{r:+.0}° (for comparison)"))
                 .unwrap_or_else(|| "learning".into())
         ));
         for l in lines {
