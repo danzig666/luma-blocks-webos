@@ -38,6 +38,11 @@ pub struct Synth {
     /// Also emit LG's pointer position (pixels per degree), following yaw and pitch in room
     /// directions like the firmware's pointer, clamped to a 1920 x 1080 screen.
     pub cursor_px_per_deg: Option<f32>,
+    /// Distance from the pivot (wrist / elbow) to the remote, metres: moving the remote
+    /// accelerates it, and the accelerometer reads that on top of gravity, as real ones do.
+    pub arm_radius_m: f32,
+    prev_ang: Option<(f32, f32)>,
+    prev_vel: Option<(f32, f32)>,
 }
 
 impl Synth {
@@ -51,6 +56,9 @@ impl Synth {
             prev: None,
             base: (0.0, 0.0, 0.0),
             cursor_px_per_deg: None,
+            arm_radius_m: 0.35,
+            prev_ang: None,
+            prev_vel: None,
         }
     }
 
@@ -93,12 +101,27 @@ impl Synth {
             axis.scale(ang / dt)
         });
         self.prev = Some(q);
+        // Linear acceleration of the remote from the (intended, tremor-free) movement:
+        // sideways for yaw, vertical for pitch, in the room frame (X right, Z up).
+        let ang = (yaw.to_radians(), pitch.to_radians());
+        let vel = self
+            .prev_ang
+            .map(|p| ((ang.0 - p.0) / dt, (ang.1 - p.1) / dt))
+            .unwrap_or((0.0, 0.0));
+        let acc = self
+            .prev_vel
+            .map(|p| ((vel.0 - p.0) / dt, (vel.1 - p.1) / dt))
+            .unwrap_or((0.0, 0.0));
+        self.prev_ang = Some(ang);
+        self.prev_vel = Some(vel);
+        let r = self.arm_radius_m;
+        let lin = Vec3::new(r * acc.0, 0.0, r * acc.1);
         MotionSample {
             t_us: self.t_us,
             quat: Some(q),
             gyro: Some(gyro.unwrap_or_default()),
-            accel: Some(q.conj().rotate(Vec3::new(0.0, 0.0, 9.81))),
-            linear_accel: None,
+            accel: Some(q.conj().rotate(Vec3::new(0.0, 0.0, 9.81).add(lin))),
+            linear_accel: Some(q.conj().rotate(lin)),
             cursor: self.cursor_px_per_deg.map(|k| {
                 (
                     (960.0 + ty * k).clamp(0.0, 1919.0),

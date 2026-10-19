@@ -227,9 +227,9 @@ pub struct Profile {
     pub sens_horizontal: f32,
     pub sens_rotation: f32,
     pub sens_drop: f32,
-    /// Turn motion by the remote's roll (from the accelerometer) so a remote held rolled
-    /// still moves in room directions. Experimental and off by default: if the TV's
-    /// accelerometer axes differ from the gyroscope's, it twists every direction.
+    /// Tilt compensation: measure turns against the room (vertical from gravity) instead of
+    /// the remote's own axes, so a remote held pointing down, rolled, or both still moves in
+    /// room directions. Experimental and off by default (needs the TV's gravity data).
     pub roll_compensation: bool,
 }
 

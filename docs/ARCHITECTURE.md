@@ -33,13 +33,16 @@ pure crates and runs on any desktop.
   asleep, duplicate subscription, too many clients, bad interval, malformed.
 * **Frames**: motion comes from the **gyroscope** whenever it is delivered (a direct
   body-frame rate with documented axes); its units are cross-checked against the orientation at
-  runtime (rad/s per LG, deg/s detected automatically). With the experimental, opt-in roll
-  compensation (off by default), the yaw and pitch rates are turned by the remote's roll about
-  its length from gravity (accelerometer, smoothed, only while it reads about 1 g). On the TV
-  0.2.10-0.2.12 applied it unconditionally and every direction went wrong, so it stays off
-  until verified there; with it off, the accelerometer has no influence on any direction. A
-  fit of LG's pointer steps (`coordinate`) against our gyro steps is shown in diagnostics for
-  comparison. The orientation's yaw and pitch are
+  runtime (rad/s per LG, deg/s detected automatically). With the experimental, opt-in tilt
+  compensation (off by default), the angular velocity is split against the room instead of the
+  body axes: the room's vertical u comes from gravity (smoothed, updated only while the remote
+  turns slower than 90°/s and reads about 1 g, so a swing's own acceleration does not bend
+  it), r is the horizontal across the pointing direction, l the remote's length. With
+  c = u·l, g = a·u + t·l + p·r gives a = (g·u − c·g·l)/(1−c²) (turn about the vertical:
+  left/right), t = (g·l − c·g·u)/(1−c²) (wrist twist) and p = g·r (up/down), so pointing down
+  at the floor, rolled, or both, every gesture keeps its meaning. With it off, the
+  accelerometer influences nothing (as in 0.2.9). A fit of LG's pointer steps against our gyro
+  steps is shown in diagnostics for comparison. The orientation's yaw and pitch are
   compared with the gyro's while the remote moves; if the firmware reports the rotation vector
   in the opposite convention (which mirrors pointing), the absolute aim is flipped to match. Short-term aim is integrated from the gyro
   with a slow leak. For the Pointing style, absolute aim comes from the orientation relative to

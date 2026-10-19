@@ -48,9 +48,20 @@ pub fn expected_columns(amp: f32) -> i32 {
 }
 
 pub fn run(rot: RotationStyle, n: u64) -> Outcome {
+    run_rolled(rot, n, 0.0, false)
+}
+
+/// Natural swings with the remote held rolled by `roll` degrees.
+pub fn run_rolled(rot: RotationStyle, n: u64, roll: f32, comp: bool) -> Outcome {
+    run_tilted(rot, n, 0.0, roll, comp)
+}
+
+/// Natural swings with the remote pitched by `pitch` and rolled by `roll` degrees.
+pub fn run_tilted(rot: RotationStyle, n: u64, pitch: f32, roll: f32, comp: bool) -> Outcome {
     let p = Profile {
         rotation: rot,
         horizontal: HorizontalStyle::Swing,
+        roll_compensation: comp,
         ..Profile::default()
     };
     let mut o = Outcome {
@@ -65,7 +76,15 @@ pub fn run(rot: RotationStyle, n: u64) -> Outcome {
         let hz = [50.0, 60.0, 100.0][(i % 3) as usize];
         let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
         let mut s = Synth::new(hz, 900 + i);
-        feed(&mut e, &s.hold(500.0));
+        s.base = (0.0, pitch, roll);
+        feed(
+            &mut e,
+            &s.hold(if roll != 0.0 || pitch != 0.0 {
+                1500.0
+            } else {
+                500.0
+            }),
+        );
         s.tremor_deg = lerp(0.05, 0.4, r(1));
         let dir = if r(2) < 0.5 { -1.0 } else { 1.0 };
         let amp = lerp(3.0, 14.0, r(3));
@@ -497,4 +516,87 @@ fn by_default_the_accelerometer_never_changes_directions() {
         aims
     };
     assert_eq!(run(false), run(true));
+}
+
+/// Natural, imperfect swings with tilt compensation and the remote held tilted.
+#[test]
+fn natural_swings_with_the_remote_held_tilted() {
+    let mut report = Vec::new();
+    let mut ok = true;
+    for (pitch, roll) in [
+        (0.0f32, -60.0f32),
+        (0.0, 45.0),
+        (-45.0, 0.0),
+        (-50.0, 35.0),
+        (20.0, -30.0),
+    ] {
+        for rot in [RotationStyle::Twist, RotationStyle::Circle] {
+            let o = run_tilted(rot, 100, pitch, roll, true);
+            report.push(format!(
+                "pitch {pitch:+} roll {roll:+} {rot:?}: {} swings, rotations {}, no move {}, wrong-way {}, off by >1 {}",
+                o.tries, o.rotations, o.none, o.wrong_way, o.off_by_more_than_one
+            ));
+            ok &= o.rotations == 0 && o.wrong_way == 0 && o.none <= 8;
+        }
+    }
+    println!("{}", report.join("\n"));
+    assert!(ok, "{}", report.join("\n"));
+}
+
+/// Held tilted in any way (pointing down at the floor, rolled, or both), with tilt
+/// compensation on: swings move left/right, flicks down drop, and a wrist twist still rotates.
+#[test]
+fn a_tilted_remote_swings_drops_and_twists_the_right_way() {
+    let mut fails = Vec::new();
+    for (pitch, roll) in [
+        (-30.0f32, 0.0f32),
+        (-55.0, 0.0),
+        (-55.0, 40.0),
+        (-40.0, -60.0),
+        (25.0, 30.0),
+        (0.0, 70.0),
+    ] {
+        for rot in [RotationStyle::Twist, RotationStyle::Circle] {
+            let p = Profile {
+                rotation: rot,
+                horizontal: HorizontalStyle::Swing,
+                roll_compensation: true,
+                ..Profile::default()
+            };
+            let mut e = GestureEngine::new(Thresholds::default(), p, Calibration::default());
+            let mut s = Synth::new(60.0, 99);
+            s.base = (0.0, pitch, roll);
+            feed(&mut e, &s.hold(2000.0));
+            let checks: Vec<(&str, Vec<Gesture>, Gesture)> = vec![
+                (
+                    "swing right",
+                    feed(&mut e, &gestures::swing(&mut s, 1.0, 6.0, 140.0, 1.0)),
+                    Gesture::MoveRight,
+                ),
+                (
+                    "swing left",
+                    feed(&mut e, &gestures::swing(&mut s, -1.0, 6.0, 140.0, 1.0)),
+                    Gesture::MoveLeft,
+                ),
+                (
+                    "drop",
+                    feed(&mut e, &gestures::drop(&mut s, 18.0, 150.0)),
+                    Gesture::HardDrop,
+                ),
+            ];
+            for (name, got, want) in checks {
+                if got.is_empty() || got.iter().any(|g| *g != want) {
+                    fails.push(format!("pitch {pitch} roll {roll} {rot:?} {name}: {got:?}"));
+                }
+            }
+            if rot == RotationStyle::Twist {
+                feed(&mut e, &s.hold(600.0));
+                let got = feed(&mut e, &gestures::twist(&mut s, 1.0, 45.0, 200.0));
+                if got != vec![Gesture::RotateCw] {
+                    fails.push(format!("pitch {pitch} roll {roll} twist: {got:?}"));
+                }
+            }
+        }
+    }
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
 }

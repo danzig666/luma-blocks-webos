@@ -222,6 +222,14 @@ impl GestureEngine {
         self.sensor.roll_rad.map(f32::to_degrees)
     }
 
+    /// How far the remote points above (+) or below (-) the horizon, from gravity, degrees.
+    pub fn pointing_elevation_deg(&self) -> Option<f32> {
+        let long = self.calib.long_axis;
+        self.sensor
+            .grav_up
+            .map(|u| u.dot(long).clamp(-1.0, 1.0).asin().to_degrees())
+    }
+
     /// The roll compensation learned from LG's pointer (screen plane), degrees.
     pub fn pointer_roll_deg(&self) -> Option<f32> {
         self.sensor.cursor_roll_rad.map(f32::to_degrees)

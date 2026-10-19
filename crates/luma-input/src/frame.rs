@@ -61,8 +61,12 @@ pub struct AimTracker {
     yaw_agree: Agreement,
     pitch_agree: Agreement,
     /// How far the remote is rolled about its length relative to the room, from gravity
-    /// (radians, smoothed); None until gravity has been seen clearly.
+    /// (radians, for diagnostics); None until gravity has been seen clearly.
     pub roll_rad: Option<f32>,
+    /// The room's vertical (unit, body frame, pointing up), from gravity, smoothed.
+    pub grav_up: Option<Vec3>,
+    /// The room's vertical and horizontal-right axes in the body frame (tilt compensation).
+    room_axes: Option<(Vec3, Vec3)>,
     /// +1 if the accelerometer reads +g along "up" when held normally (LG's example data and
     /// most sensors), -1 if the firmware reports the opposite sign; learned from the first
     /// clear readings (players start with the remote held normally).
@@ -119,6 +123,8 @@ impl AimTracker {
             self.accel_up_sign,
             self.cursor_roll_rad,
         );
+        // The tilt describes how the remote is held, not a gesture: keep it too.
+        let (grav_up, room_axes, roll_rad) = (self.grav_up, self.room_axes, self.roll_rad);
         let (ys, ps, ya, pa) = (
             self.orient_yaw_sign,
             self.orient_pitch_sign,
@@ -130,45 +136,66 @@ impl AimTracker {
         self.gyro_units_checked = checked;
         self.accel_up_sign = accel_sign;
         self.cursor_roll_rad = cursor_roll;
+        self.grav_up = grav_up;
+        self.room_axes = room_axes;
+        self.roll_rad = roll_rad;
         self.orient_yaw_sign = ys;
         self.orient_pitch_sign = ps;
         self.yaw_agree = ya;
         self.pitch_agree = pa;
     }
 
-    /// Yaw and pitch rates (deg/s) in room directions: the body-frame rates turned by the
-    /// remote's roll, so a remote held rolled still moves left/right and up/down the way the
-    /// player sees it.
+    /// Split the angular velocity `g` (deg/s, body frame) into a turn about the room's
+    /// vertical `u`, a twist about the remote's long axis `l` and a tilt about the horizontal
+    /// axis `r` across the pointing direction. `u` and `l` are not perpendicular when the
+    /// remote points up or down, so g = a*u + t*l + p*r is solved with c = u.l:
+    /// a = (g.u - c g.l) / (1 - c^2), t = (g.l - c g.u) / (1 - c^2), p = g.r.
+    fn room_split(g: Vec3, u: Vec3, l: Vec3, r: Vec3) -> (f32, f32, f32) {
+        let c = u.dot(l).clamp(-0.95, 0.95);
+        let d = 1.0 - c * c;
+        let (gu, gl) = (g.dot(u), g.dot(l));
+        ((gu - c * gl) / d, (gl - c * gu) / d, g.dot(r))
+    }
+
+    /// Yaw, pitch and twist rates (deg/s). Without tilt compensation: about the calibrated
+    /// body axes (as before 0.2.10). With it: a turn about the room's vertical, a tilt about
+    /// the room's horizontal across the pointing direction, and a twist about the remote's
+    /// length, so a remote held pointing down at the floor, rolled, or both still swings
+    /// left/right, flicks down and twists. Calibrated sign flips apply in both cases.
+    fn room_rates3(
+        &self,
+        g: Vec3,
+        long: Vec3,
+        up: Vec3,
+        right: Vec3,
+        calib: &Calibration,
+        cfg: &Thresholds,
+    ) -> (f32, f32, f32) {
+        let (yaw, pitch, twist) = match (cfg.roll_compensation, self.room_axes) {
+            (true, Some((u, r))) => {
+                let (a, t, p) = Self::room_split(g, u, long, r);
+                (-a, p, t)
+            }
+            _ => (-g.dot(up), g.dot(right), g.dot(long)),
+        };
+        (
+            yaw * calib.yaw_sign,
+            pitch * calib.pitch_sign,
+            twist * calib.twist_sign,
+        )
+    }
+
     fn room_rates(
         &self,
         g: Vec3,
+        long: Vec3,
         up: Vec3,
         right: Vec3,
         calib: &Calibration,
         cfg: &Thresholds,
     ) -> (f32, f32) {
-        // Screen-plane rates (x right, y down) as calibrated for the neutral hold...
-        let (bx, by) = (-g.dot(up) * calib.yaw_sign, -g.dot(right) * calib.pitch_sign);
-        // ...turned by how the remote is rolled.
-        let (sn, cs) = self.screen_roll(calib, cfg).sin_cos();
-        let (x, y) = (cs * bx - sn * by, sn * bx + cs * by);
-        (x, -y)
-    }
-
-    /// The rotation in the screen plane that compensates the remote's roll, from gravity,
-    /// when roll compensation is on (off by default: on the TV, 0.2.10-0.2.12 turned every
-    /// direction wrongly with it, so it waits for verification there). The fit against LG's
-    /// pointer is shown in diagnostics only.
-    fn screen_roll(&self, calib: &Calibration, cfg: &Thresholds) -> f32 {
-        if !cfg.roll_compensation {
-            return 0.0;
-        }
-        match self.roll_rad {
-            // Gravity gives the roll in the body frame; in the screen plane it turns the
-            // other way, and a calibrated mirror flips it again.
-            Some(r) => -r * calib.yaw_sign * calib.pitch_sign,
-            None => 0.0,
-        }
+        let (y, p, _) = self.room_rates3(g, long, up, right, calib, cfg);
+        (y, p)
     }
 
     /// Fit the rotation between our (calibrated, unrotated) gyro motion and LG's pointer
@@ -299,34 +326,50 @@ impl AimTracker {
         self.check_units(s, dt_raw);
         let dt_int = dt_raw.min(0.1);
         // Absolute aim from the orientation (relative to the calibrated neutral pose).
-        // Roll about the long axis, from gravity: while the remote rests or moves gently the
-        // accelerometer points up in the body frame.
+        // The room's vertical in the body frame, from gravity: updated only while the remote
+        // moves gently (a moving remote's accelerometer also reads its own acceleration,
+        // sideways during a swing), smoothed, and frozen during gestures.
         if let Some(a) = s.accel {
             // Accept m/s² (about 9.8 at rest) or g units (about 1); only directions matter.
             let gl = a.len();
             let one_g = if (0.6..1.6).contains(&gl) { 1.0 } else { 9.81 };
             let a = a.scale(9.81 / one_g);
-            let (ar, au) = (a.dot(right), a.dot(up));
+            let au = a.dot(up);
             if self.accel_up_sign.is_none() && au.abs() > 7.0 && (a.len() - 9.81).abs() < 1.5 {
                 self.accel_up_sign = Some(au.signum());
                 if au < 0.0 {
-                    self.roll_rad = None; // was learned with the wrong sign
+                    self.grav_up = None; // was learned with the wrong sign
                 }
             }
-            let sg = self.accel_up_sign.unwrap_or(1.0);
-            let (ar, au) = (ar * sg, au * sg);
             // Until a clear reading says otherwise, assume the documented sign.
-            if (a.len() - 9.81).abs() < 2.5 && (ar * ar + au * au).sqrt() > 4.0 {
-                let phi = ar.atan2(au);
+            let a = a.scale(self.accel_up_sign.unwrap_or(1.0));
+            let turning = s
+                .gyro
+                .map(|g| g.len() * self.scale())
+                .is_some_and(|dps| dps > 90.0);
+            if (a.len() - 9.81).abs() < 1.5 && !turning {
+                let m = a.norm();
                 let k = if dt_int > 0.0 {
-                    dt_int / (0.12 + dt_int)
+                    dt_int / (0.15 + dt_int)
                 } else {
                     1.0
                 };
-                self.roll_rad = Some(match self.roll_rad {
-                    Some(r) => r + wrap_rad(phi - r) * k,
-                    None => phi,
+                self.grav_up = Some(match self.grav_up {
+                    Some(u) => u.add(m.sub(u).scale(k)).norm(),
+                    None => m,
                 });
+            }
+            if let Some(u) = self.grav_up {
+                self.roll_rad = Some(u.dot(right).atan2(u.dot(up)));
+                // The room's right axis: across the pointing direction, horizontal. Kept from
+                // before while the remote points (nearly) straight up or down.
+                let fwd = long.sub(u.scale(u.dot(long)));
+                if fwd.len() > 0.25 {
+                    let r = fwd.norm().cross(u).norm();
+                    self.room_axes = Some((u, r));
+                } else if let Some((_, r)) = self.room_axes {
+                    self.room_axes = Some((u, r));
+                }
             }
         }
         let raw_orient = s.quat.map(|q| {
@@ -340,7 +383,7 @@ impl AimTracker {
         });
         if let Some((yaw, pitch, _)) = raw_orient {
             let gyro_step = s.gyro.filter(|_| dt_int > 0.0).map(|g| {
-                let (y, p) = self.room_rates(g.scale(self.scale()), up, right, calib, cfg);
+                let (y, p) = self.room_rates(g.scale(self.scale()), long, up, right, calib, cfg);
                 (y * dt_int, p * dt_int)
             });
             self.check_orientation(yaw, pitch, gyro_step);
@@ -362,8 +405,7 @@ impl AimTracker {
         let use_gyro = s.gyro.is_some() && (cfg.prefer_gyro || orient.is_none());
         let (aim, twist, twist_rate_g) = if use_gyro {
             let g = s.gyro.unwrap().scale(self.scale());
-            let (yaw_rate, pitch_rate) = self.room_rates(g, up, right, calib, cfg);
-            let twist_rate = g.dot(long) * calib.twist_sign;
+            let (yaw_rate, pitch_rate, twist_rate) = self.room_rates3(g, long, up, right, calib, cfg);
             // Short-term integration with a slow leak toward zero (no long-term drift).
             let leak = (-dt_int / 4.0).exp();
             self.gyro_yaw = (self.gyro_yaw + yaw_rate * dt_int) * leak;
@@ -416,10 +458,4 @@ impl AimTracker {
             gap,
         }
     }
-}
-
-/// Wrap an angle to -pi..pi.
-fn wrap_rad(a: f32) -> f32 {
-    let t = std::f32::consts::TAU;
-    a - t * ((a + std::f32::consts::PI) / t).floor()
 }

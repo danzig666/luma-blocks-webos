@@ -252,12 +252,16 @@ impl App {
             _ => "learning",
         };
         lines.push(format!(
-            "orientation vs gyro: yaw {}  ·  pitch {}  ·  roll: gravity {}, pointer {}",
+            "orientation vs gyro: yaw {}  ·  pitch {}  ·  roll: gravity {} (points {}), pointer {}",
             sign(oy),
             sign(op),
             self.engine
                 .roll_deg()
                 .map(|r| format!("{r:+.0}°"))
+                .unwrap_or_else(|| "?".into()),
+            self.engine
+                .pointing_elevation_deg()
+                .map(|p| format!("{p:+.0}°"))
                 .unwrap_or_else(|| "?".into()),
             self.engine
                 .pointer_roll_deg()
