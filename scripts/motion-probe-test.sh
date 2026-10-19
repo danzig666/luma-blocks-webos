@@ -36,6 +36,9 @@ check invalidtypes 0
 check sleepy 0
 check stall 0 "renewing" 10
 check keymode 0 "state: paused" 7
+check noaccel 0 "gravity data arrives" 8
+check noaccel_allfails 0 "back to the usual request" 8
+check_absent noaccel_allfails "stalled" 9
 check_absent keymode "renewing" 7
 check denied 1
 check silent 1

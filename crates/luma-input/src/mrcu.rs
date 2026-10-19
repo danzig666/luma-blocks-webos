@@ -180,8 +180,12 @@ pub fn parse_sensor2(payload: &str, t_us: u64) -> Reply {
         t_us,
         quat,
         gyro: vec3(v.get("gyroscope")),
-        // The request type is "acceleration" but the documented reply key is "accelerometer".
-        accel: vec3(v.get("accelerometer")).or_else(|| vec3(v.get("acceleration"))),
+        // Gravity is what the app needs from acceleration: prefer the service's own gravity
+        // vector ("gravity", delivered with sensorType "all"); else the raw accelerometer (the
+        // request type is "acceleration" but the documented reply key is "accelerometer").
+        accel: vec3(v.get("gravity"))
+            .or_else(|| vec3(v.get("accelerometer")))
+            .or_else(|| vec3(v.get("acceleration"))),
         linear_accel: vec3(v.get("linearAcceleration")),
         cursor: v
             .get("coordinate")
@@ -295,7 +299,8 @@ mod tests {
         let q = s.quat.unwrap();
         assert!((q.w - 0.7813).abs() < 1e-3 && (q.z - 0.6153).abs() < 1e-3);
         assert!((s.gyro.unwrap().x + 0.684).abs() < 1e-3);
-        assert!((s.accel.unwrap().z - 11.31).abs() < 1e-3);
+        // The service's gravity vector is preferred over the raw accelerometer.
+        assert!((s.accel.unwrap().z - 9.70).abs() < 1e-3);
         assert_eq!(s.cursor, Some((99.0, 1074.0)));
         assert_eq!(s.interval_ms, Some(995.0));
     }

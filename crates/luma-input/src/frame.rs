@@ -302,6 +302,10 @@ impl AimTracker {
         // Roll about the long axis, from gravity: while the remote rests or moves gently the
         // accelerometer points up in the body frame.
         if let Some(a) = s.accel {
+            // Accept m/s² (about 9.8 at rest) or g units (about 1); only directions matter.
+            let gl = a.len();
+            let one_g = if (0.6..1.6).contains(&gl) { 1.0 } else { 9.81 };
+            let a = a.scale(9.81 / one_g);
             let (ar, au) = (a.dot(right), a.dot(up));
             if self.accel_up_sign.is_none() && au.abs() > 7.0 && (a.len() - 9.81).abs() < 1.5 {
                 self.accel_up_sign = Some(au.signum());

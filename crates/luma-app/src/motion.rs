@@ -210,6 +210,19 @@ struct Worker {
     renew_after_us: u64,
     /// A new subscription was made: its first data restarts gesture state.
     fresh_subscription: bool,
+    /// Gravity / accelerometer data has arrived (needed for roll); when it has not after a
+    /// few seconds of streaming, "all" sensor types are asked for once.
+    saw_accel: bool,
+    streaming_since: u64,
+    accel_retry: AccelRetry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AccelRetry {
+    NotTried,
+    /// Subscribed with "all" to get gravity; any trouble reverts to the original request.
+    Trying,
+    Done,
 }
 
 const RENEW_FIRST_US: u64 = 4_000_000;
@@ -515,7 +528,16 @@ impl Worker {
                     if matches!(self.state(), State::Paused | State::Sleeping) {
                         self.renew_after_us = RENEW_FIRST_US;
                     }
+                    self.streaming_since = s.t_us;
                     self.set_state(State::Streaming);
+                }
+                if s.accel.is_some() && !self.saw_accel {
+                    self.saw_accel = true;
+                    if self.accel_retry == AccelRetry::Trying {
+                        self.accel_retry = AccelRetry::Done;
+                        self.shared
+                            .status(|st| st.note("gravity data arrives with \"all\"".into()));
+                    }
                 }
                 self.shared.push(s);
             }
@@ -530,6 +552,15 @@ impl Worker {
             Reply::Ok => {}
             Reply::Error(e) => {
                 self.shared.status(|s| s.last_error = Some(e.clone()));
+                if self.accel_retry == AccelRetry::Trying {
+                    // "all" is not welcome here: go back to the request that worked.
+                    self.accel_retry = AccelRetry::Done;
+                    self.types_idx = 0;
+                    self.shared
+                        .status(|s| s.note(format!("\"all\" refused ({e:?}); back to the usual request")));
+                    self.resubscribe();
+                    return;
+                }
                 match e {
                     MrcuError::Sleeping => {
                         self.drop_subscription();
@@ -624,18 +655,47 @@ impl Worker {
         if !self.want_running || self.bus.is_none() {
             return;
         }
+        // No gravity / accelerometer data after a few seconds: ask once for "all" types (LG
+        // documents it; it includes the service's own gravity vector).
+        if self.state() == State::Streaming
+            && !self.legacy
+            && !self.saw_accel
+            && self.accel_retry == AccelRetry::NotTried
+            && self.types_idx == 0
+            && now.saturating_sub(self.streaming_since) > 3_000_000
+        {
+            self.accel_retry = AccelRetry::Trying;
+            self.types_idx = 1;
+            self.shared
+                .status(|s| s.note("no accelerometer data; asking for \"all\" sensor types".into()));
+            self.resubscribe();
+        }
+        // "all" delivered nothing within a few seconds: go back as well.
+        if self.accel_retry == AccelRetry::Trying
+            && matches!(
+                self.state(),
+                State::Paused | State::Subscribing | State::Subscribed
+            )
+            && now.saturating_sub(self.last_data_us) > 3_000_000
+        {
+            self.accel_retry = AccelRetry::Done;
+            self.types_idx = 0;
+            self.shared
+                .status(|s| s.note("no data with \"all\"; back to the usual request".into()));
+            self.resubscribe();
+        }
         if self.resubscribe_at.is_some_and(|t| now >= t) {
             self.resubscribe_at = None;
             self.subscribe();
         }
         match self.state() {
-            State::Probing if now - self.probe_sent_us > 2_000_000 => {
+            State::Probing if now.saturating_sub(self.probe_sent_us) > 2_000_000 => {
                 self.next_connection("no reply");
             }
             // A live stream that stops for over a second has stalled; a fresh subscription
             // starts at one sample per second, so it gets longer.
             State::Streaming | State::Subscribed | State::Subscribing
-                if now - self.last_data_us
+                if now.saturating_sub(self.last_data_us)
                     > if self.state() == State::Streaming {
                         1_200_000
                     } else {
@@ -804,6 +864,9 @@ impl MotionHub {
                 paused_since: 0,
                 renew_after_us: RENEW_FIRST_US,
                 fresh_subscription: false,
+                saw_accel: false,
+                streaming_since: 0,
+                accel_retry: AccelRetry::NotTried,
             }
             .run()
         });

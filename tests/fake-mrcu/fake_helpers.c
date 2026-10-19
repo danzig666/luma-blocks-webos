@@ -3,7 +3,9 @@
 // subscription (an interval set before subscribing is ignored, the worst case).
 // FAKE_MRCU=ok (default) | denied | silent | invalidtypes | sleepy (asleep for the first 1.5 s)
 // | stall (the first subscription silently stops delivering after 1.5 s)
-// | keymode (no data from 1.5 s to 4.5 s, as in button mode, then the same subscription resumes). Used by scripts/motion-probe-test.sh.
+// | keymode (no data from 1.5 s to 4.5 s, as in button mode, then the same subscription resumes)
+// | noaccel (no accelerometer unless sensorType "all", which adds "gravity")
+// | noaccel_allfails (no accelerometer, and "all" is refused). Used by scripts/motion-probe-test.sh.
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -16,7 +18,7 @@ typedef struct HContext HContext;
 typedef bool (*Fn)(void*, void*, HContext*);
 struct HContext { Fn callback; void* userdata; void* unknown; int multiple; int pub; unsigned long ret_token; };
 typedef struct { char text[2048]; } Msg;
-static int interval_ms = 1000, subscribed = 0;
+static int interval_ms = 1000, subscribed = 0, sub_all = 0;
 static HContext* sub_ctx = NULL;
 static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
 static double t_start = -1;
@@ -35,10 +37,13 @@ static void* stream(void* arg){
     if(!live) break;
     usleep(iv*1000); t+=iv/1000.0;
     double a=0.3*sin(t*2.0); // twisting slowly
+    int no_accel = !strncmp(mode(),"noaccel",7);
+    const char* acc = !no_accel ? ",\"accelerometer\":{\"x\":0.1,\"y\":0.2,\"z\":9.8}"
+                    : (sub_all ? ",\"gravity\":{\"x\":0.0,\"y\":0.3,\"z\":9.8}" : "");
     snprintf(buf,sizeof buf,"{\"returnValue\":true,\"interval\":%d.0,\"coordinate\":{\"x\":960,\"y\":540},"
-      "\"gyroscope\":{\"x\":0.0,\"y\":%f,\"z\":0.0},\"accelerometer\":{\"x\":0.1,\"y\":0.2,\"z\":9.8},"
+      "\"gyroscope\":{\"x\":0.0,\"y\":%f,\"z\":0.0}%s,"
       "\"linearAcceleration\":{\"x\":0,\"y\":0,\"z\":0},\"gameRotationVector\":{\"x\":0,\"y\":%f,\"z\":0,\"w\":%f}}",
-      iv, 0.6*cos(t*2.0), sin(a/2), cos(a/2));
+      iv, 0.6*cos(t*2.0), acc, sin(a/2), cos(a/2));
     pthread_mutex_lock(&mu); live = subscribed && sub_ctx==c; pthread_mutex_unlock(&mu);
     if(live) reply(c,buf);
   }
@@ -59,8 +64,9 @@ static void* worker(void* arg){
   } else if(!strcmp(u,"sensor2/getSensorEventData")){
     if(!strcmp(mode(),"invalidtypes") && !strstr(j->payload,"\"all\"")) { reply(c,"{\"returnValue\":false,\"errorCode\":1002,\"errorText\":\"Invalid parameter\"}"); free(j); return NULL; }
     if(!awake()) { reply(c,"{\"returnValue\":false,\"errorCode\":1003,\"errorText\":\"Magic remote is not ready\"}"); free(j); return NULL; }
+    if(!strcmp(mode(),"noaccel_allfails") && strstr(j->payload,"\"all\"")) { reply(c,"{\"returnValue\":false,\"errorCode\":1001,\"errorText\":\"Subscription add fail\"}"); free(j); return NULL; }
     pthread_mutex_lock(&mu); if(subscribed){ pthread_mutex_unlock(&mu); reply(c,"{\"returnValue\":false,\"errorCode\":1004,\"errorText\":\"Already add subscription\"}"); free(j); return NULL;}
-    subscribed=1; sub_ctx=c; interval_ms=1000; pthread_mutex_unlock(&mu);
+    subscribed=1; sub_ctx=c; interval_ms=1000; sub_all = strstr(j->payload,"\"all\"")!=NULL; pthread_mutex_unlock(&mu);
     reply(c,"{\"subscribed\":true,\"returnValue\":true}");
     pthread_t t; pthread_create(&t,NULL,stream,c); pthread_detach(t);
   } else if(!strcmp(u,"sensor2/cancelSensorDataSubscribe")){ pthread_mutex_lock(&mu); subscribed=0; sub_ctx=NULL; pthread_mutex_unlock(&mu); reply(c,"{\"returnValue\":true}"); }
